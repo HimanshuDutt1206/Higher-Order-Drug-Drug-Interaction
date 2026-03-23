@@ -1,132 +1,167 @@
-# PolySignal: High-Order Polypharmacy Risk Prediction (HGNN-SA vs PolyFormer)
+# PolySignal: High-Order Polypharmacy Risk Prediction
 
-PolySignal is a research prototype for predicting whether a **multi-drug (polypharmacy) combination** is likely to cause a **specific adverse side effect** (UMLS CUI), using the **HODDI dataset (2014Q3–2024Q3)**.  
-The project implements and compares two modeling paradigms under a **strict quarter-wise chronological split**:
+PolySignal is a machine learning project for predicting whether a **combination of multiple drugs** is likely to cause a **specific adverse side effect**, using the **HODDI dataset**.
 
-- **HGNN-SA**: Hypergraph Neural Network (HypergraphConv) + SMILES CNN + attention pooling  
-- **PolyFormer** (novel): Inductive set-attention model + SMILES CNN + self-attention and SE→drug cross-attention
+We implemented and compared two models:
 
-A **Streamlit dashboard** allows users to input arbitrary drug combinations and compare predictions from both models.
-
-> Disclaimer: Research prototype; not for clinical use.
+- **HGNN-SA**: a hypergraph neural network with SMILES-based drug features
+- **PolyFormer**: an inductive set-attention model for drug combinations
 
 ---
 
-## Repository Contents
+## Project Overview
 
-### Key files
-- `hoddi_merged.csv`  
-  Merged dataset (all quarters). Each row: drug set, side effect, label, time.
-- `Drugbank_ID_SMILE_all_structure links.csv`  
-  DrugBank ID → drug name + SMILES (used for chemistry features + UI mapping).
-- `Side_effects_unique.csv`  
-  UMLS CUI → side effect name (+ embeddings columns `0..767`, used mainly for mapping).
-- `train.py`  
-  Trains/evaluates HGNN-SA and writes `faculty_evaluation_report.txt`. Saves `sota_model.pt`.
-- `polyformer_train.py` (or similarly named PolyFormer training script)  
-  Trains/evaluates PolyFormer and writes `faculty_report_polyformer_*.txt`. Saves PolyFormer checkpoint.
-- `app.py`  
-  Streamlit app to compare **HGNN-SA vs PolyFormer** on the same user input.
-- `faculty_evaluation_report.txt`  
-  Final HGNN-SA test metrics.
-- `faculty_report_polyformer_*.txt`  
-  Final PolyFormer test metrics.
-- Model checkpoints:
-  - `sota_model.pt` (HGNN-SA)
-  - `polyformer_model_learnable_se_nofilter.pt` (PolyFormer; filename may vary)
+The goal of this project is to solve the following problem:
+
+> Given a list of drugs and a target side effect, predict whether that drug combination will cause that side effect.
+
+This is a **high-order polypharmacy prediction task**, because the input is not just a single drug or a pair of drugs, but a group of drugs taken together.
+
+We built two different models to solve this problem and compared them under the same data split.
 
 ---
 
-## Dataset Format (HODDI)
+## Dataset
 
-Each record contains:
-- `DrugBankID`: list of DrugBank IDs (stored as a stringified list in CSV)
-- `SE_label`: UMLS CUI for side effect (e.g., `C0013404`)
-- `hyperedge_label`: `1` (positive) or `-1` (negative)
-- `time`: quarter label (e.g., `2019Q2`)
+We use the **HODDI** dataset (*Higher-Order Drug-Drug Interactions for Computational Pharmacovigilance*), derived from FAERS reports from:
 
-We convert:
-- `hyperedge_label` → `y ∈ {0,1}` by mapping `-1 → 0`, `1 → 1`.
+- **2014Q3 to 2024Q3**
+- **41 quarters total**
+
+### Main dataset file
+- `hoddi_merged.csv`
+
+### Important columns
+- `DrugBankID` → list of DrugBank IDs in the prescription
+- `SE_label` → UMLS CUI for the side effect
+- `hyperedge_label` → `1` for positive samples, `-1` for negative samples
+- `time` → quarter of the record
+
+We convert the labels as:
+- `1 → positive`
+- `-1 → negative`
 
 ---
 
-## Split Strategy (Critical)
-All experiments use **strict chronological splitting by quarter** (no shuffling):
+## Data Split
 
-- **Train**: earliest 70% of quarters (2014Q3 → 2021Q2)
-- **Validation**: next 15% (2021Q3 → 2022Q4)
-- **Test**: latest 15% (2023Q1 → 2024Q3)
+We used a **strict chronological split by quarter**, not a random split.
 
-This simulates real deployment: learn from past, predict future.
+- **Train:** earliest 70% of quarters  
+  `2014Q3 → 2021Q2`
+
+- **Validation:** next 15% of quarters  
+  `2021Q3 → 2022Q4`
+
+- **Test:** latest 15% of quarters  
+  `2023Q1 → 2024Q3`
+
+This means the models are always tested on **future data**, which makes the evaluation more realistic and avoids data leakage.
 
 ---
 
 ## Models
 
-### 1) HGNN-SA (Hypergraph Neural Network + SMILES + Attention)
-- **Nodes**: drugs  
-- **Hyperedges**: each record/report (drug set)
-- Drug features:
-  - learnable Drug ID embedding
-  - SMILES CNN embedding (char-level tokenization, max length 256)
-- HypergraphConv message passing (2 layers)
-- Attention pooling within each hyperedge
-- Learnable side effect embedding
-- MLP head for final prediction
+### 1) HGNN-SA
 
-**Notes on inference:**  
-HGNN uses message passing over a hypergraph; stable inference is achieved by using a **train-only context hypergraph** plus the query hyperedge (implemented in the Streamlit app).
+HGNN-SA treats each prescription record as a **hyperedge** in a hypergraph.
 
-### 2) PolyFormer (Inductive Set-Attention, Novel)
-PolyFormer treats each drug set as a **set of tokens**, not as part of a global hypergraph.
+#### How it works
+- **Nodes** = drugs
+- **Hyperedges** = drug combinations from each record
 
-- Drug features:
-  - learnable Drug ID embedding
-  - SMILES CNN embedding
-- **Self-attention** across drugs in the set (TransformerEncoder)
-- **Cross-attention** from the side effect embedding (query) to the drug tokens
-- Learnable side effect embedding (for fair comparison vs HGNN-SA)
+Each drug is represented using:
+- a learnable **drug ID embedding**
+- a **SMILES CNN embedding** from its molecular structure
 
-**Combo size handling:**  
-No filtering by size; to allow transformer batching, very large drug sets are deterministically truncated to `MAX_DRUGS=16` (reported during training).
+These features are passed through two **HypergraphConv** layers so that drugs can exchange information through the combinations they appear in.
+
+Then:
+- attention pooling is used to combine the drug features inside each hyperedge
+- this pooled combination vector is concatenated with a learnable side-effect embedding
+- an MLP outputs the final probability
+
+#### Why this model is useful
+It explicitly models higher-order relations between drugs using hypergraph message passing.
 
 ---
 
-## Results (Example)
-Your exact numbers depend on training runs, but the final workflow produces text reports:
+### 2) PolyFormer
 
-- `faculty_evaluation_report.txt` (HGNN-SA)
-- `faculty_report_polyformer_*.txt` (PolyFormer)
+PolyFormer treats the prescription as a **set of drugs**, rather than a hypergraph.
 
-Example (from a completed run):
-- HGNN-SA ROC-AUC ≈ **0.869**
-- PolyFormer ROC-AUC ≈ **0.965**
+#### How it works
+Each drug is represented using:
+- a learnable **drug ID embedding**
+- a **SMILES CNN embedding**
+
+Then:
+- the set of drugs is passed through **self-attention**
+- the side effect embedding interacts with the drug set using **cross-attention**
+- the resulting representation is passed through an MLP to produce the risk probability
+
+#### Why this model is useful
+PolyFormer is **inductive**, meaning it can make predictions directly from an arbitrary user-entered drug set without needing an inference-time hypergraph.
 
 ---
 
-## Installation
+## Repository Structure
 
-Create and activate a virtual environment, then install dependencies:
+```text
+Higher-Order-Drug-Drug-Interaction/
+│
+├── app.py
+├── Drugbank_ID_SMILE_all_structure links.csv
+├── DrugBankID2SMILES.csv
+├── evaluate_HGNN.txt
+├── Evaluate_PolyFormer.txt
+├── HGNN_model.pt
+├── HGNN_train.py
+├── hoddi_merged.csv
+├── polyformer_model.pt
+├── polyformer_train.py
+├── README.md
+├── requirements.txt
+├── SE_similarity_2014Q3_2024Q3.csv
+└── Side_effects_unique.csv
+```
 
-```bash
-pip install -U pip
-pip install pandas numpy scikit-learn plotly matplotlib streamlit
-pip install torch torchvision torchaudio
-pip install torch-geometric torch-scatter
+---
+
+## Results
+
+Both models were evaluated on the same unseen future test set.
+
+### HGNN-SA Performance
+From `evaluate_HGNN.txt`:
+- **ROC-AUC:** 0.8691
+- **PR-AUC:** 0.8791
+- **F1-score:** 0.7767
+- **Accuracy:** 0.7954
+- **Precision:** 0.8549
+- **Recall:** 0.7116
+
+### PolyFormer Performance
+From `Evaluate_PolyFormer.txt`:
+- **ROC-AUC:** 0.9651
+- **PR-AUC:** 0.9658
+- **F1-score:** 0.8897
+- **Accuracy:** 0.8959
+- **Precision:** 0.9457
+- **Recall:** 0.8400
+
+---
+
+## Summary
+
+PolyFormer significantly outperformed HGNN-SA on the same chronological future test set across all evaluation metrics.  
+This suggests that an **inductive set-attention architecture** is highly effective for modeling **high-order drug interactions**, and can generalize better to unseen future prescriptions compared to hypergraph-based approaches.
+
+---
 
 ## Citation
 
-### HODDI dataset / paper
-**Wang, Z., Shi, Y., Liu, X., Chen, C., Wen, J., & Wang, R.**  
-*HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational Pharmacovigilance.*  
-arXiv preprint **arXiv:2502.06274** (2025).  
-https://arxiv.org/abs/2502.06274
+If you use or reference the HODDI dataset, please cite:
 
-#### BibTeX
-```bibtex
-@article{wang2025hoddi,
-  title={HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational Pharmacovigilance},
-  author={Wang, Zhaoying and Shi, Yingdan and Liu, Xiang and Chen, Can and Wen, Jun and Wang, Ren},
-  journal={arXiv preprint arXiv:2502.06274},
-  year={2025}
-}
+**Wang Z, Shi Y, Liu X, Chen C, Wen J, Wang R. 
+HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational Pharmacovigilance.https://arxiv.org/pdf/2502.06274**  

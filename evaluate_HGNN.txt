@@ -1,0 +1,21 @@
+
+======================================================================
+🏥 EVALUATION REPORT: POLYPHARMACY HGNN-SA
+======================================================================
+Model Architecture: Hypergraph Neural Network + SMILES CNN + Attention
+Data Split strategy: Strict Chronological Quarter-Level (70/15/15)
+
+🏆 FINAL TEST SET METRICS (Unseen Future Data):
+----------------------------------------------------------------------
+ROC-AUC (Main Metric) : 0.8903
+PR-AUC                : 0.8990
+F1-Score              : 0.8054
+Accuracy              : 0.8189
+Precision             : 0.8698
+Recall                : 0.7499
+
+🧩 CONFUSION MATRIX:
+                     Predicted Safe (0) | Predicted Toxic (1)
+Actual Safe (0)    : 11730              | 1483
+Actual Toxic (1)   : 3304               | 9909
+======================================================================

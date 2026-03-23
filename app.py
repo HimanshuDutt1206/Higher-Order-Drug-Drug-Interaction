@@ -17,10 +17,10 @@ HODDI_CSV = "hoddi_merged.csv"
 DRUGBANK_CSV = "Drugbank_ID_SMILE_all_structure links.csv"
 SIDE_EFFECTS_UNIQUE_CSV = "Side_effects_unique.csv"
 
-HGNN_CKPT = "sota_model.pt"
+HGNN_CKPT = "HGNN_model.pt"
 
 # If your filename differs, change it here:
-POLYFORMER_CKPT = "polyformer_model_learnable_se_nofilter.pt"
+POLYFORMER_CKPT = "polyformer_model.pt"
 
 MAX_SMILES_LEN = 256
 

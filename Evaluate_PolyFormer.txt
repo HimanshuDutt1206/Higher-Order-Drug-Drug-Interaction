@@ -1,0 +1,23 @@
+
+======================================================================
+🏥 EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
+======================================================================
+Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
+SE representation: Learnable embedding (fair vs HGNN-SA)
+Split: Strict quarter-wise chronological 70/15/15 (same as HGNN-SA)
+Combo size handling: No filtering; drug sets truncated to MAX_DRUGS=16 (deterministic)
+
+🏆 FINAL TEST SET METRICS (Unseen Future Data):
+----------------------------------------------------------------------
+ROC-AUC (Main Metric) : 0.9678
+PR-AUC                : 0.9672
+F1-Score              : 0.8940
+Accuracy              : 0.8988
+Precision             : 0.9384
+Recall                : 0.8536
+
+🧩 CONFUSION MATRIX:
+                     Predicted Safe (0) | Predicted Toxic (1)
+Actual Safe (0)    : 12425              | 737
+Actual Toxic (1)   : 1927               | 11235
+======================================================================

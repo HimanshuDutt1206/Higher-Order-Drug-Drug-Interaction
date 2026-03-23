@@ -32,8 +32,8 @@ DRUGBANK_CSV = "Drugbank_ID_SMILE_all_structure links.csv"
 MAX_DRUGS = 16
 MAX_SMILES_LEN = 256
 
-OUT_MODEL = "polyformer_model_learnable_se_nofilter.pt"
-OUT_REPORT = "faculty_report_polyformer_learnable_se_nofilter.txt"
+OUT_MODEL = "polyformer_model.pt"
+OUT_REPORT = "Evaluate_PolyFormer.txt"
 
 
 # ==========================================================
@@ -380,7 +380,7 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
     cm = test_metrics["cm"]
     report = f"""
 ======================================================================
-🏥 FACULTY EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
+🏥 EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
 ======================================================================
 Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
 SE representation: Learnable embedding (fair vs HGNN-SA)

@@ -1,0 +1,12 @@
+pandas<3.0
+numpy<2.0
+scikit-learn<2.0
+plotly>=5.18
+matplotlib>=3.7
+streamlit>=1.30
+
+torch
+torchvision
+torchaudio
+
+torch-geometric
