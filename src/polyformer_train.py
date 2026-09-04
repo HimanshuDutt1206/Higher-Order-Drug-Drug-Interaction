@@ -24,16 +24,16 @@ def seed_all(seed=42):
 
 seed_all(42)
 
-HODDI_CSV = "hoddi_merged.csv"
-DRUGBANK_CSV = "Drugbank_ID_SMILE_all_structure links.csv"
+HODDI_CSV = "data/hoddi_merged.csv"
+DRUGBANK_CSV = "data/Drugbank_ID_SMILE_all_structure links.csv"
 
 # We REMOVE the size filter. But the model still needs a max length.
 # 16 covers the vast majority of HODDI records (most are <=10).
 MAX_DRUGS = 16
 MAX_SMILES_LEN = 256
 
-OUT_MODEL = "polyformer_model.pt"
-OUT_REPORT = "Evaluate_PolyFormer.txt"
+OUT_MODEL = "models/polyformer_model.pt"
+OUT_REPORT = "results/Evaluate_PolyFormer.txt"
 
 
 # ==========================================================

@@ -72,11 +72,11 @@ class HGNN_SA(nn.Module):
 # ==========================================
 def prepare_sota_data():
     print("📥 Loading Dataset and SMILES...")
-    df = pd.read_csv("hoddi_merged.csv")
+    df = pd.read_csv("data/hoddi_merged.csv")
     df['DrugBankID'] = df['DrugBankID'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df['target'] = df['hyperedge_label'].apply(lambda x: 0 if x == -1 else 1)
     
-    smiles_df = pd.read_csv("Drugbank_ID_SMILE_all_structure links.csv", usecols=['DrugBank ID', 'SMILES'])
+    smiles_df = pd.read_csv("data/Drugbank_ID_SMILE_all_structure links.csv", usecols=['DrugBank ID', 'SMILES'])
     smiles_dict = dict(zip(smiles_df['DrugBank ID'], smiles_df['SMILES']))
     
     all_drugs = sorted(list(set([drug for sublist in df['DrugBankID'] for drug in sublist])))
@@ -185,7 +185,7 @@ def train_and_evaluate(max_epochs=500):
                     'se2idx': data['se2idx'],
                     'char2idx': data['char2idx'],
                     'smiles_tensor': data['smiles_tensor']
-                }, 'HGNN_model.pt')
+                }, 'models/HGNN_model.pt')
             else:
                 patience_counter += 1
                 
@@ -199,7 +199,7 @@ def train_and_evaluate(max_epochs=500):
     
     # --- EVALUATION PHASE ---
     # Load the best model weights
-    checkpoint = torch.load('HGNN_model.pt', map_location=device)
+    checkpoint = torch.load('models/HGNN_model.pt', map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
@@ -247,10 +247,10 @@ Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
     print(report)
     
     # Save to a text file
-    with open("evaluate_HGNN.txt", "w", encoding="utf-8") as f:
+    with open("results/evaluate_HGNN.txt", "w", encoding="utf-8") as f:
         f.write(report)
         
-    print("💾 Saved evaluation results to 'evaluate_HGNN.txt'.")
+    print("💾 Saved evaluation results to 'results/evaluate_HGNN.txt'.")
 
 if __name__ == "__main__":
     train_and_evaluate(max_epochs=500)
