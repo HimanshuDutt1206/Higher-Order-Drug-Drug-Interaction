@@ -110,21 +110,40 @@ PolyFormer is **inductive**, meaning it can make predictions directly from an ar
 ```text
 Higher-Order-Drug-Drug-Interaction/
 │
-├── app.py
-├── Drugbank_ID_SMILE_all_structure links.csv
-├── DrugBankID2SMILES.csv
-├── evaluate_HGNN.txt
-├── Evaluate_PolyFormer.txt
-├── HGNN_model.pt
-├── HGNN_train.py
-├── hoddi_merged.csv
-├── polyformer_model.pt
-├── polyformer_train.py
+├── app.py                          # Streamlit app (run from project root)
 ├── README.md
 ├── requirements.txt
-├── SE_similarity_2014Q3_2024Q3.csv
-└── Side_effects_unique.csv
+│
+├── data/                           # Raw and reference datasets
+│   ├── hoddi_merged.csv                # Main HODDI dataset (labels + drug combos)
+│   ├── Drugbank_ID_SMILE_all_structure links.csv  # DrugBank ID → SMILES mapping
+│   ├── DrugBankID2SMILES.csv           # Alternative DrugBank ID → SMILES reference
+│   ├── SE_similarity_2014Q3_2024Q3.csv # Side-effect similarity matrix over time
+│   └── Side_effects_unique.csv         # Unique side effects with UMLS CUI and names
+│
+├── src/                            # Training scripts
+│   ├── HGNN_train.py               # Train and evaluate the HGNN-SA model
+│   └── polyformer_train.py         # Train and evaluate the PolyFormer model
+│
+├── models/                         # Saved model checkpoints
+│   ├── HGNN_model.pt               # Best HGNN-SA weights + vocab mappings
+│   └── polyformer_model.pt         # Best PolyFormer weights + vocab mappings
+│
+└── results/                        # Evaluation reports
+    ├── evaluate_HGNN.txt           # HGNN-SA test set metrics
+    └── Evaluate_PolyFormer.txt     # PolyFormer test set metrics
 ```
+
+> **Note:** All scripts expect to be run from the **project root** directory so that relative paths (`data/`, `models/`, `results/`) resolve correctly.
+>
+> ```bash
+> # Train
+> python src/HGNN_train.py
+> python src/polyformer_train.py
+>
+> # Launch app
+> streamlit run app.py
+> ```
 
 ---
 

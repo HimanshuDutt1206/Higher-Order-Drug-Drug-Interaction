@@ -71,12 +71,12 @@ class HGNN_SA(nn.Module):
 # 2. DATA PREPARATION (Strict Quarter Split)
 # ==========================================
 def prepare_sota_data():
-    print("📥 Loading Dataset and SMILES...")
-    df = pd.read_csv("hoddi_merged.csv")
+    print("Loading Dataset and SMILES...")
+    df = pd.read_csv("data/hoddi_merged.csv")
     df['DrugBankID'] = df['DrugBankID'].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df['target'] = df['hyperedge_label'].apply(lambda x: 0 if x == -1 else 1)
     
-    smiles_df = pd.read_csv("Drugbank_ID_SMILE_all_structure links.csv", usecols=['DrugBank ID', 'SMILES'])
+    smiles_df = pd.read_csv("data/Drugbank_ID_SMILE_all_structure links.csv", usecols=['DrugBank ID', 'SMILES'])
     smiles_dict = dict(zip(smiles_df['DrugBank ID'], smiles_df['SMILES']))
     
     all_drugs = sorted(list(set([drug for sublist in df['DrugBankID'] for drug in sublist])))
@@ -111,7 +111,7 @@ def prepare_sota_data():
     val_q = unique_quarters[train_end:val_end]
     test_q = unique_quarters[val_end:]
     
-    print(f"📅 Split -> Train: {len(train_q)} quarters | Val: {len(val_q)} quarters | Test: {len(test_q)} quarters")
+    print(f"Split -> Train: {len(train_q)} quarters | Val: {len(val_q)} quarters | Test: {len(test_q)} quarters")
     
     splits = {
         'train': df[df['time'].isin(train_q)].reset_index(drop=True),
@@ -143,7 +143,7 @@ def prepare_sota_data():
 def train_and_evaluate(max_epochs=500):
     data = prepare_sota_data()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\n🚀 Training SOTA HGNN-SA on {device}...")
+    print(f"\nTraining SOTA HGNN-SA on {device}...")
     
     model = HGNN_SA(data['num_drugs'], data['num_ses'], len(data['char2idx'])+1).to(device)
     criterion = nn.BCEWithLogitsLoss()
@@ -185,27 +185,27 @@ def train_and_evaluate(max_epochs=500):
                     'se2idx': data['se2idx'],
                     'char2idx': data['char2idx'],
                     'smiles_tensor': data['smiles_tensor']
-                }, 'HGNN_model.pt')
+                }, 'models/HGNN_model.pt')
             else:
                 patience_counter += 1
                 
         print(f"Epoch {epoch+1:03d} | Train Loss: {loss.item():.4f} | Val AUC: {auc:.4f}")
         
         if patience_counter >= early_stop_patience:
-            print(f"🛑 Early stopping triggered at epoch {epoch+1}. Best Val AUC: {best_auc:.4f}")
+            print(f"Early stopping triggered at epoch {epoch+1}. Best Val AUC: {best_auc:.4f}")
             break
 
-    print("\n✅ Training Complete. Moving to Final Test Set Evaluation...\n")
+    print("\nTraining Complete. Moving to Final Test Set Evaluation...\n")
     
     # --- EVALUATION PHASE ---
     # Load the best model weights
-    checkpoint = torch.load('HGNN_model.pt', map_location=device)
+    checkpoint = torch.load('models/HGNN_model.pt', map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
     test_h, test_s, test_y = [t.to(device) for t in data['test']]
     
-    print("🔮 Running Inference on unseen Future Quarters...")
+    print("Running Inference on unseen Future Quarters...")
     with torch.no_grad():
         out_test = model(test_h, test_s, smiles_t)
         probs = torch.sigmoid(out_test).cpu().numpy()
@@ -224,12 +224,12 @@ def train_and_evaluate(max_epochs=500):
     # --- GENERATE EVALUATION REPORT ---
     report = f"""
 ======================================================================
-🏥 EVALUATION REPORT: POLYPHARMACY HGNN-SA
+EVALUATION REPORT: POLYPHARMACY HGNN-SA
 ======================================================================
 Model Architecture: Hypergraph Neural Network + SMILES CNN + Attention
 Data Split strategy: Strict Chronological Quarter-Level (70/15/15)
 
-🏆 FINAL TEST SET METRICS (Unseen Future Data):
+FINAL TEST SET METRICS (Unseen Future Data):
 ----------------------------------------------------------------------
 ROC-AUC (Main Metric) : {test_auc:.4f}
 PR-AUC                : {test_pr_auc:.4f}
@@ -238,7 +238,7 @@ Accuracy              : {test_acc:.4f}
 Precision             : {test_prec:.4f}
 Recall                : {test_rec:.4f}
 
-🧩 CONFUSION MATRIX:
+CONFUSION MATRIX:
                      Predicted Safe (0) | Predicted Toxic (1)
 Actual Safe (0)    : {cm[0][0]:<18} | {cm[0][1]}
 Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
@@ -247,10 +247,10 @@ Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
     print(report)
     
     # Save to a text file
-    with open("evaluate_HGNN.txt", "w", encoding="utf-8") as f:
+    with open("results/evaluate_HGNN.txt", "w", encoding="utf-8") as f:
         f.write(report)
         
-    print("💾 Saved evaluation results to 'evaluate_HGNN.txt'.")
+    print("Saved evaluation results to 'results/evaluate_HGNN.txt'.")
 
 if __name__ == "__main__":
     train_and_evaluate(max_epochs=500)

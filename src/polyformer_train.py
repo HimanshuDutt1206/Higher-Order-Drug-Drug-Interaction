@@ -24,16 +24,16 @@ def seed_all(seed=42):
 
 seed_all(42)
 
-HODDI_CSV = "hoddi_merged.csv"
-DRUGBANK_CSV = "Drugbank_ID_SMILE_all_structure links.csv"
+HODDI_CSV = "data/hoddi_merged.csv"
+DRUGBANK_CSV = "data/Drugbank_ID_SMILE_all_structure links.csv"
 
 # We REMOVE the size filter. But the model still needs a max length.
 # 16 covers the vast majority of HODDI records (most are <=10).
 MAX_DRUGS = 16
 MAX_SMILES_LEN = 256
 
-OUT_MODEL = "polyformer_model.pt"
-OUT_REPORT = "Evaluate_PolyFormer.txt"
+OUT_MODEL = "models/polyformer_model.pt"
+OUT_REPORT = "results/Evaluate_PolyFormer.txt"
 
 
 # ==========================================================
@@ -143,7 +143,7 @@ def quarter_split(df, train_frac=0.70, val_frac=0.15):
 
 
 def load_and_prepare():
-    print("📥 Loading HODDI (NO combo-size filter)...")
+    print("Loading HODDI (NO combo-size filter)...")
     df = pd.read_csv(HODDI_CSV)
     df["DrugBankID"] = df["DrugBankID"].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df["y"] = (df["hyperedge_label"] == 1).astype(np.int64)
@@ -163,12 +163,12 @@ def load_and_prepare():
     df["se_idx"] = df["SE_label"].map(se2idx).astype(np.int64)
 
     # Load DrugBank SMILES
-    print("🧬 Loading DrugBank SMILES...")
+    print("Loading DrugBank SMILES...")
     db = pd.read_csv(DRUGBANK_CSV, usecols=["DrugBank ID", "SMILES"])
     drug2smiles = dict(zip(db["DrugBank ID"], db["SMILES"]))
 
     # Build SMILES char vocab
-    print("🔡 Building SMILES char vocab...")
+    print("Building SMILES char vocab...")
     chars = set()
     for s in drug2smiles.values():
         if isinstance(s, str) and len(s) > 0:
@@ -179,7 +179,7 @@ def load_and_prepare():
     unk = char2idx["<UNK>"]
 
     # Tokenize SMILES per drug
-    print("🧪 Tokenizing SMILES (per drug)...")
+    print("Tokenizing SMILES (per drug)...")
     smiles_tok = np.zeros((len(drug2idx), MAX_SMILES_LEN), dtype=np.int64)
     for drug, di in drug2idx.items():
         s = drug2smiles.get(drug, None)
@@ -199,7 +199,7 @@ def load_and_prepare():
     def trunc_count(frame):
         return int((frame["k"] > MAX_DRUGS).sum())
 
-    print(f"📅 Quarters total: {len(sorted(df['time'].unique()))}")
+    print(f"Quarters total: {len(sorted(df['time'].unique()))}")
     print(f"   Train: {len(train_q)} ({train_q[0]} -> {train_q[-1]}) | rows={len(train_df)} | >{MAX_DRUGS} drugs={trunc_count(train_df)}")
     print(f"   Val:   {len(val_q)} ({val_q[0]} -> {val_q[-1]}) | rows={len(val_df)} | >{MAX_DRUGS} drugs={trunc_count(val_df)}")
     print(f"   Test:  {len(test_q)} ({test_q[0]} -> {test_q[-1]}) | rows={len(test_df)} | >{MAX_DRUGS} drugs={trunc_count(test_df)}")
@@ -296,7 +296,7 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
     test_t = pack_split(test_df, drug2idx)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("🚀 Device:", device)
+    print("Device:", device)
 
     smiles_tok_t = smiles_tok.to(device)
 
@@ -369,7 +369,7 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
             patience_ctr += 1
 
         if patience_ctr >= patience:
-            print(f"🛑 Early stopping. Best val_auc={best_val_auc:.4f}")
+            print(f"Early stopping. Best val_auc={best_val_auc:.4f}")
             break
 
     # Test eval
@@ -380,14 +380,14 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
     cm = test_metrics["cm"]
     report = f"""
 ======================================================================
-🏥 EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
+EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
 ======================================================================
 Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
 SE representation: Learnable embedding (fair vs HGNN-SA)
 Split: Strict quarter-wise chronological 70/15/15 (same as HGNN-SA)
 Combo size handling: No filtering; drug sets truncated to MAX_DRUGS={MAX_DRUGS} (deterministic)
 
-🏆 FINAL TEST SET METRICS (Unseen Future Data):
+FINAL TEST SET METRICS (Unseen Future Data):
 ----------------------------------------------------------------------
 ROC-AUC (Main Metric) : {test_metrics['roc_auc']:.4f}
 PR-AUC                : {test_metrics['pr_auc']:.4f}
@@ -396,7 +396,7 @@ Accuracy              : {test_metrics['acc']:.4f}
 Precision             : {test_metrics['precision']:.4f}
 Recall                : {test_metrics['recall']:.4f}
 
-🧩 CONFUSION MATRIX:
+CONFUSION MATRIX:
                      Predicted Safe (0) | Predicted Toxic (1)
 Actual Safe (0)    : {cm[0][0]:<18} | {cm[0][1]}
 Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
@@ -406,8 +406,8 @@ Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
     with open(OUT_REPORT, "w", encoding="utf-8") as f:
         f.write(report)
 
-    print(f"💾 Saved -> {OUT_REPORT}")
-    print(f"💾 Saved -> {OUT_MODEL}")
+    print(f"Saved -> {OUT_REPORT}")
+    print(f"Saved -> {OUT_MODEL}")
 
 
 if __name__ == "__main__":
