@@ -1,842 +1,672 @@
-# PolyFormer: A Deep Explanation
+# PolyFormer: Set Transformer for Higher-Order DDIs
+
+### A Complete Theory, Math, and Code Walkthrough
+
+> **How to read this doc:** Same style as `explanationHGNN.md`. Assumes ML *ideas*, not formulas. Worked examples label where every number comes from.
+>
+> **Shared pieces:** SMILES CNN, embeddings, ID‖SMILES fusion, loss, chronological split, and basic attention pooling are already in the HGNN doc. This file **points there** and focuses on what PolyFormer does differently: **self-attention over a drug set** and **cross-attention from the side effect**.
+
+### Actual PolyFormer dimension cheat-sheet (from the code)
+
+
+| Piece                                  | Actual size                            |
+| -------------------------------------- | -------------------------------------- |
+| SMILES char embedding / fingerprint    | **64** / **64** (same CNN as HGNN)     |
+| Drug ID embedding                      | **64**                                 |
+| After concat + `drug_proj` (`d_model`) | **128**                                |
+| SE embedding / combo vector            | **128**                                |
+| Transformer heads                      | **8** (each head: 128/8 = **16** dims) |
+| FFN hidden inside encoder              | **512** (= 4 × 128)                    |
+| Encoder layers                         | **2**                                  |
+| Final MLP                              | **256** → **128** → **1** logit        |
+| Max drugs per sample (`MAX_DRUGS`)     | **16** (pad with −1)                   |
+| SMILES pad length                      | **256**                                |
+
+
+### Primer
+
+Same ideas as HGNN (vector, weighted sum, ReLU, softmax, linear, embedding). See the **Primer** in `explanationHGNN.md`. Softmax turns scores into percentages that sum to 1 — that is the heart of attention.
+
+---
 
 ## Table of Contents
 
-1. [The Problem Being Solved](#1-the-problem-being-solved)
-2. [Why This is Hard](#2-why-this-is-hard)
-3. [High-Level Architecture Overview](#3-high-level-architecture-overview)
-4. [Building Blocks: Theory First](#4-building-blocks-theory-first)
-   - 4.1 [Embeddings](#41-embeddings)
-   - 4.2 [Convolutional Neural Networks on Sequences](#42-convolutional-neural-networks-on-sequences)
-   - 4.3 [Self-Attention and the Transformer](#43-self-attention-and-the-transformer)
-   - 4.4 [Cross-Attention](#44-cross-attention)
-5. [Code Walkthrough: Every Block Explained](#5-code-walkthrough-every-block-explained)
-   - 5.1 [Configuration Constants](#51-configuration-constants)
-   - 5.2 [SmilesEncoder — CNN Drug Structure Encoder](#52-smilesencoder--cnn-drug-structure-encoder)
-   - 5.3 [PolyFormerLearnableSE — The Full Model](#53-polyformerlearnablese--the-full-model)
-   - 5.4 [Data Loading and Preparation](#54-data-loading-and-preparation)
-   - 5.5 [Packing Drug Sets into Fixed-Size Tensors](#55-packing-drug-sets-into-fixed-size-tensors)
-   - 5.6 [Set Invariance Augmentation](#56-set-invariance-augmentation)
-   - 5.7 [The Training Loop](#57-the-training-loop)
-   - 5.8 [Evaluation](#58-evaluation)
-6. [End-to-End Data Flow (One Prediction)](#6-end-to-end-data-flow-one-prediction)
-7. [Design Decisions and Why](#7-design-decisions-and-why)
-8. [Limitations](#8-limitations)
+1. [The Problem](#1-the-problem)
+2. [Why a Set Transformer (not a Hypergraph)?](#2-why-a-set-transformer-not-a-hypergraph)
+3. [Architecture Overview](#3-architecture-overview)
+4. [Block 1 — SMILES Encoder](#4-block-1--smiles-encoder)
+5. [Block 2 — Drug Feature Construction](#5-block-2--drug-feature-construction)
+6. [Block 3 — Self-Attention (drugs talk to each other)](#6-block-3--self-attention-drugs-talk-to-each-other)
+7. [Block 4 — Cross-Attention (side effect queries drugs)](#7-block-4--cross-attention-side-effect-queries-drugs)
+8. [Block 5 — Prediction Head](#8-block-5--prediction-head)
+9. [Data Preparation](#9-data-preparation)
+10. [Training Loop](#10-training-loop)
+11. [Evaluation](#11-evaluation)
+12. [End-to-End Data Flow Summary](#12-end-to-end-data-flow-summary)
+13. [PolyFormer vs HGNN (quick)](#13-polyformer-vs-hgnn-quick)
 
 ---
 
-## 1. The Problem Being Solved
+## 1. The Problem
 
-When a patient takes **multiple drugs at the same time**, those drugs can interact with each other and cause **side effects** that none of them would cause individually. This is called a **Drug-Drug Interaction (DDI)**.
+Same task as HGNN:
 
-Most research only studies pairwise interactions (Drug A + Drug B). But in real clinical settings, patients often take 5, 10, or even 15 drugs simultaneously. The interactions in a group of drugs are called **Higher-Order Drug-Drug Interactions (HODDI)**.
+> **Given this set of drugs + this side effect, will the combination cause it?** → probability in (0, 1)
 
-**The goal of PolyFormer:**  
-Given a *set* of drugs (any size, e.g. 3 or 7 drugs) and a candidate side effect, predict:
-
-> Does this combination of drugs cause this side effect? → **Yes (1) or No (0)**
-
-This is a **binary classification** task. The model is a scorer, not a generator — it does not name side effects from scratch. You give it a drug set and a side effect, and it tells you how likely that combination is to cause it.
+See `explanationHGNN.md` §1 for polypharmacy background. PolyFormer is another architecture for the **same binary question**.
 
 ---
 
-## 2. Why This is Hard
+## 2. Why a Set Transformer (not a Hypergraph)?
 
-| Challenge | Why it matters |
-|---|---|
-| **Variable-size inputs** | Standard neural nets expect fixed-size inputs. Drug sets can have 2 to 15+ drugs. |
-| **Order doesn't matter** | {DrugA, DrugB, DrugC} is the same as {DrugC, DrugA, DrugB}. The model must be *set-invariant*. |
-| **Sparse data** | Most drug combinations have never been tested together in clinical trials. |
-| **High-order interactions** | You can't predict the effect of 5 drugs by just looking at all pairs — emergent effects exist. |
-| **Rich drug representations** | A drug's molecular structure matters, not just its identity. |
+HGNN builds a **global hypergraph**: drugs are nodes; prescriptions are hyperedges; message passing mixes neighbourhoods across the training graph.
 
-PolyFormer addresses all of these in a single architecture.
+PolyFormer treats **each sample alone** as an unordered **set** of drug vectors:
+
+
+| Challenge                              | PolyFormer approach                                                   |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| Variable number of drugs               | Pad to `MAX_DRUGS=16`, mask pads                                      |
+| Order should not matter                | Self-attention + random shuffle in training                           |
+| Drugs must interact inside the combo   | **Self-attention**: each drug looks at every other drug in *this* set |
+| Side effect should re-weight the combo | **Cross-attention**: SE vector queries the drug set                   |
+
+
+No incidence matrix. No full-dataset graph in the forward pass — just one padded set per row.
 
 ---
 
-## 3. High-Level Architecture Overview
+## 3. Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          INPUT                                       │
-│                                                                      │
-│   Drug Set: [DrugA, DrugB, DrugC, ...]    Side Effect: "nausea"    │
-└───────────────────────────┬──────────────────────────┬──────────────┘
-                            │                          │
-                ┌───────────▼───────────┐   ┌──────────▼──────────┐
-                │   For EACH drug:      │   │  SE Embedding       │
-                │                       │   │                      │
-                │  Drug ID ──► [64-dim] │   │  "nausea" ──► [128] │
-                │  SMILES  ──► [64-dim] │   │  (learnable lookup) │
-                │           (CNN)       │   └──────────┬──────────┘
-                │                       │              │
-                │  Concat → [128-dim]   │              │
-                │  Linear → [128-dim]   │              │
-                └───────────┬───────────┘              │
-                            │                          │
-                ┌───────────▼───────────┐              │
-                │  Transformer          │              │
-                │  Self-Attention       │              │
-                │                       │              │
-                │  Each drug attends    │              │
-                │  to ALL other drugs   │              │
-                │  → [K × 128-dim]      │              │
-                └───────────┬───────────┘              │
-                            │                          │
-                ┌───────────▼──────────────────────────▼──────────┐
-                │           Cross-Attention                        │
-                │                                                  │
-                │  SE embedding QUERIES the drug set               │
-                │  "Which drugs are relevant to nausea?"           │
-                │  → [128-dim] context vector                      │
-                └───────────────────────┬──────────────────────────┘
-                                        │
-                            ┌───────────▼───────────┐
-                            │  MLP Classifier        │
-                            │                        │
-                            │  [context, SE] → [256] │
-                            │  → [128] → [1]         │
-                            │  → sigmoid → prob      │
-                            └───────────┬────────────┘
-                                        │
-                                  0.73 (73% likely)
+┌─────────────────────────────────────────────────────────────────┐
+│                     PolyFormer Forward Pass                     │
+│                                                                 │
+│  For each drug in the set (up to 16):                           │
+│    SMILES ──► SmilesEncoder ──► 64-dim  (same as HGNN)         │
+│    Drug ID ──────────────────► 64-dim                           │
+│              concat → drug_proj → 128-dim                       │
+│                                                                 │
+│  Stack K drug vectors → [K × 128]  (pads masked)                │
+│                                                                 │
+│  TransformerEncoder × 2  (self-attention)                       │
+│  Each drug attends to all drugs in THIS set → [K × 128]         │
+│                                                                 │
+│  Side effect ──► 128-dim SE embedding                           │
+│       │                                                         │
+│       └─► Cross-Attention: SE queries drug set                  │
+│           → one combo vector [128]                              │
+│                                                                 │
+│  concat(combo, SE) → [256] → MLP → logit → σ → probability      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. Building Blocks: Theory First
+## 4. Block 1 — SMILES Encoder
 
-Before reading the code, you need to understand the four fundamental ideas the model uses.
+**Identical idea and code shape as HGNN** (`SmilesEncoder`: embed → Conv1d 64→128 → Conv1d 128→64 → max-pool → **64** numbers).
 
----
+Do not re-learn the filter math here. Read:
 
-### 4.1 Embeddings
+- `explanationHGNN.md` §4 — full worked example on `CCO`
+- what the **64** output means (pattern meters; position discarded by max-pool)
 
-An **embedding** is a way to represent a discrete item (like a drug ID or a character) as a continuous vector of numbers.
-
-Imagine you have 500 drugs. You can't feed the string "DrugBank:DB00001" into a neural network. Instead, you assign each drug a vector of 64 floating-point numbers:
-
-```
-"DB00001"  →  [0.23, -0.11, 0.87, ..., 0.44]   (64 numbers)
-"DB00002"  →  [-0.05, 0.72, 0.13, ..., -0.31]  (64 numbers)
-```
-
-These numbers are **learned during training**. Initially random, they shift so that drugs with similar interaction profiles end up with similar vectors (close in vector space).
-
-This is implemented in PyTorch as `nn.Embedding(num_items, embedding_dim)`, which is essentially a lookup table — given an integer index, return the corresponding row.
-
-**Mathematically:**  
-Given item index `i` ∈ {0, ..., N-1}, and embedding matrix `E` of shape `[N, d]`:
-
-```
-embed(i) = E[i]     (just a row lookup)
-```
-
-Training updates `E` via gradient descent.
+**Output here:** for every drug that appears, `smiles_feats[d] ∈ ℝ⁶⁴`.
 
 ---
 
-### 4.2 Convolutional Neural Networks on Sequences
+## 5. Block 2 — Drug Feature Construction
 
-You might know CNNs from image processing, but they work on any sequence. For a 1D sequence (like a string of characters), a convolution slides a small window across the sequence and computes a weighted sum at each position.
-
-**Intuition:** A window of size 3 looks at 3 consecutive characters at a time. If the model learns to detect "C=O" (a carbonyl group, important in chemistry), the convolution fires strongly wherever it sees that pattern.
-
-**Mathematically:**  
-Given input sequence `x` of length `L`, where each position has `C_in` features, a Conv1D with kernel size 3 computes at each position `t`:
+### Same fusion as HGNN
 
 ```
-output[t] = ReLU( Σ_{k=0}^{2}  W[k] · x[t + k - 1]  +  b )
+ID emb (64)  ‖  SMILES (64)  →  concat (128)  →  Linear drug_proj (128→128)
 ```
 
-where `W` is the learned kernel (filter) of shape `[C_out, C_in, 3]`.
+Why both ID and SMILES, and why the linear mix: see `explanationHGNN.md` §5 (shared CNN vs private ID row).
 
-After two convolution layers, **max pooling** collapses the entire sequence into one vector by taking the maximum value at each feature dimension across all positions:
+### What is different: a set of vectors, not one graph of all drugs
 
-```
-output[j] = max over t of  conv_output[t, j]
-```
-
-This gives a single fixed-size vector regardless of the input sequence length.
-
----
-
-### 4.3 Self-Attention and the Transformer
-
-Self-attention is the mechanism that lets each element in a sequence look at every other element and decide how much to "pay attention" to it.
-
-**Intuition:** Imagine 4 drugs in a set. Drug A asks: "Given that I'm in this combination, which of the other drugs are most relevant to understanding how I contribute to the interaction?" The answer is computed dynamically based on the content of all drug representations.
-
-**The Math:**
-
-Each input vector `x_i` is linearly projected into three vectors:
-- **Query (Q):** "What am I looking for?"
-- **Key (K):** "What do I offer to others?"
-- **Value (V):** "What information do I actually pass on?"
+HGNN builds features for **all** drugs, then pools per hyperedge.  
+PolyFormer, for **one sample**, builds up to **16** drug vectors and stacks them:
 
 ```
-Q = X · W_Q       shape: [K, d_model]
-K = X · W_K       shape: [K, d_model]
-V = X · W_V       shape: [K, d_model]
+Actual shapes for one batch of B samples:
+  drugs_pad     [B, 16]      drug indices (−1 = pad)
+  mask          [B, 16]      1 = real drug, 0 = pad
+  drug_feat     [B, 16, 128] after ID‖SMILES + drug_proj
 ```
 
-where `X` is the matrix of all K drug embeddings stacked, and `W_Q, W_K, W_V` are learned weight matrices.
+Pads still get some embedding after `clamp(min=0)`, but a **padding mask** tells attention to ignore them.
 
-The attention score between drug `i` and drug `j` is:
-
-```
-score(i, j) = (Q[i] · K[j]) / √d_model
-```
-
-Dividing by `√d_model` prevents the dot products from getting too large (which would push the softmax into very flat or very sharp distributions, hurting gradient flow).
-
-These scores are normalized with softmax to get attention weights that sum to 1:
+### Worked Example — one sample with 3 drugs
 
 ```
-α[i, j] = exp(score(i,j)) / Σ_k exp(score(i,k))
+drugs_pad = [12, 47, 203, -1, -1, ..., -1]   # length 16, 12 and 47 and 203 are the drug index of lookup table
+mask      = [ 1,  1,   1,  0,  0, ...,  0]
+
+After Block 2 (toy 2-dim stand-in for 128):
+  drug_feat[0] ≈ [0.45, 0.35]   # drug 12
+  drug_feat[1] ≈ [0.10, 0.90]   # drug 47
+  drug_feat[2] ≈ [0.80, 0.20]   # drug 203
+  positions 3..15: ignored later by mask
 ```
 
-The new representation of drug `i` is a weighted sum of all values:
-
-```
-output[i] = Σ_j  α[i, j] · V[j]
-```
-
-**Multi-Head Attention** runs this process `nhead` times in parallel, each with its own set of `W_Q, W_K, W_V` matrices. Each "head" can specialize — one might learn "drugs with similar metabolism", another "drugs that share a receptor". The outputs of all heads are concatenated and projected back to `d_model`.
-
-**The full Transformer Encoder Layer** is:
-
-```
-drug_ctx = LayerNorm( drug_feat + MultiHeadSelfAttention(drug_feat) )
-drug_ctx = LayerNorm( drug_ctx  + FeedForward(drug_ctx) )
-```
-
-The **FeedForward** is a simple 2-layer MLP applied independently to each position. The **residual connections** (`+ drug_feat`) ensure gradients can flow directly to earlier layers (this is what makes deep networks trainable).
-
----
-
-### 4.4 Cross-Attention
-
-Cross-attention is the same mechanism as self-attention, but the Query comes from one source and the Keys/Values come from another.
-
-Here, the **side effect embedding is the Query**, and the **drug set representations are the Keys and Values**:
-
-```
-Q = SE_embedding    (1 vector: what does "nausea" care about?)
-K = V = drug_ctx    (K vectors: all drug representations)
-
-output = softmax(Q · Kᵀ / √d) · V
-```
-
-The result is a single vector: a weighted summary of the drug set, where the weights reflect how relevant each drug is to *this specific side effect*.
-
-This is the core insight of PolyFormer. A different side effect would produce a completely different weighting of the same drug set, and thus a different interaction vector.
-
----
-
-## 5. Code Walkthrough: Every Block Explained
-
----
-
-### 5.1 Configuration Constants
+### The Code
 
 ```python
-MAX_DRUGS = 16
-MAX_SMILES_LEN = 256
-
-OUT_MODEL = "models/polyformer_model.pt"
-OUT_REPORT = "results/Evaluate_PolyFormer.txt"
+did = self.drug_id_emb(drugs_safe)                    # [B, K, 64]
+# SmilesEncoder on unique drugs in the batch, then map back
+smiles_feat = ...                                     # [B, K, 64]
+drug_feat = self.drug_proj(torch.cat([did, smiles_feat], dim=-1))  # [B, K, 128]
 ```
-
-**`MAX_DRUGS = 16`**  
-Transformers require fixed-size inputs in practice. The HODDI dataset has drug combos of varying sizes (2 to 15+). We pick 16 as the upper limit because it covers the vast majority of records. Combos with more than 16 drugs are deterministically truncated (sorted alphabetically, first 16 kept). Shorter combos are padded with a sentinel value of `-1`.
-
-**`MAX_SMILES_LEN = 256`**  
-SMILES strings also vary in length. 256 characters covers most drug structures. Shorter strings are zero-padded; longer ones are truncated.
-
-**Why 16 and 256 specifically?**  
-These are practical engineering choices — large enough to cover most real data, small enough to keep memory usage manageable during training. They were verified to cover the vast majority of the dataset with minimal truncation loss.
 
 ---
 
-### 5.2 SmilesEncoder — CNN Drug Structure Encoder
+## 6. Block 3 — Self-Attention (drugs talk to each other)
 
-```python
-class SmilesEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim=64, out_dim=64):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.conv1 = nn.Conv1d(embed_dim, 128, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(128, out_dim, kernel_size=3, padding=1)
-```
+This is the main PolyFormer-specific block. Read it slowly — each subsection builds on the last.
 
-**`nn.Embedding(vocab_size, embed_dim, padding_idx=0)`**  
-Maps each character in the SMILES string to a 64-dim vector. The `padding_idx=0` means that character index 0 (used for padding) always gets the zero vector and its gradients are ignored — it contributes nothing to learning.
+### 6.1 What we want
 
-The `vocab_size` is the number of unique characters across all SMILES strings in the dataset (e.g. letters like C, N, O, digits, brackets, =, #, etc.) plus a special `<UNK>` token for characters not seen in training.
+Before this block, each drug in the combo has its own 128-dim vector (from Block 2). Those vectors **do not yet know who else is in the combo**.
 
-**`nn.Conv1d(embed_dim, 128, kernel_size=3, padding=1)`**  
-A 1D convolution that:
-- Takes `embed_dim=64` input channels (the character embedding dimension)
-- Produces `128` output channels (128 different learned filters)
-- Uses a kernel of size 3 (looks at 3 consecutive characters at a time)
-- `padding=1` adds one zero on each side so the output length equals the input length (same-padding)
+After this block, each drug’s vector should be **updated using the other drugs** in the same set.
 
-**`nn.Conv1d(128, out_dim, kernel_size=3, padding=1)`**  
-Second convolution that compresses 128 channels down to `out_dim=64`.
+> Drug A asks: “Given B and C are also here, what should *my* representation become?”
 
-```python
-    def forward(self, smiles_tokens):  # [B, L]
-        x = self.embed(smiles_tokens).transpose(1, 2)  # [B, E, L]
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.max_pool1d(x, kernel_size=x.size(2)).squeeze(-1)  # [B, out_dim]
-        return x
-```
+### 6.2 How Query, Key, Value are made (with numbers)
 
-**Step-by-step tensor shapes:**
+Start with three drug vectors.
 
-| Operation | Shape | Meaning |
+| | Toy (hand math) | Actual model |
 |---|---|---|
-| Input `smiles_tokens` | `[B, 256]` | B drugs, each as 256 character indices |
-| After `embed` | `[B, 256, 64]` | Each character is now a 64-dim vector |
-| After `transpose(1,2)` | `[B, 64, 256]` | Conv1D expects `[batch, channels, length]` |
-| After `conv1 + ReLU` | `[B, 128, 256]` | 128 filters detect local patterns |
-| After `conv2 + ReLU` | `[B, 64, 256]` | Compressed to 64 channels |
-| After `max_pool1d` | `[B, 64, 1]` | Best activation across the whole sequence |
-| After `squeeze(-1)` | `[B, 64]` | One 64-dim vector per drug |
-
-**Why ReLU?**  
-ReLU (Rectified Linear Unit): `f(x) = max(0, x)`. It introduces non-linearity — without it, stacking linear layers is mathematically equivalent to a single linear layer, and the model can't learn complex patterns.
-
-**Why max pooling at the end?**  
-We need a fixed-size output regardless of sequence length. Max pooling picks the most strongly activated feature across all positions — essentially asking "did this pattern appear anywhere in the molecule?" This is more appropriate than average pooling for detecting the *presence* of a chemical motif.
-
-**Why CNN and not Transformer for SMILES?**  
-CNNs are fast and local patterns in SMILES (functional groups, ring structures) are what carry chemical meaning. The 3-gram window is well-suited for this. Using a full Transformer on 256-character sequences for every drug in every batch would be computationally expensive and likely unnecessary.
-
----
-
-### 5.3 PolyFormerLearnableSE — The Full Model
-
-#### Constructor
-
-```python
-class PolyFormerLearnableSE(nn.Module):
-    def __init__(self, num_drugs, smiles_vocab_size, num_ses,
-                 d_model=128, nhead=8, num_layers=2):
-        super().__init__()
-
-        self.drug_id_emb = nn.Embedding(num_drugs, 64)
-        self.smiles_enc = SmilesEncoder(smiles_vocab_size, embed_dim=64, out_dim=64)
-        self.drug_proj = nn.Linear(128, d_model)
-```
-
-**`self.drug_id_emb`**: A learnable lookup table for drug identity. Each drug in the dataset gets a unique 64-dim vector. This captures "behavioral" information — how this drug has appeared in interaction patterns in the training data. It doesn't know anything about chemistry; it just knows which drug this is.
-
-**`self.smiles_enc`**: The CNN from Section 5.2. This captures "structural" information from the drug's molecular formula. It doesn't know the drug's ID; it reads the chemical structure directly.
-
-**Why use both?** They capture complementary information. The ID embedding learns from interaction patterns in the data. The SMILES CNN learns from molecular structure. A drug that just entered the dataset (new drug) would have a random ID embedding but a meaningful SMILES encoding. Together they're more robust.
-
-**`self.drug_proj = nn.Linear(128, d_model)`**: After concatenating the 64-dim ID embedding and 64-dim SMILES vector, we have 128 dimensions. This linear layer projects it to `d_model=128`. This might seem like a no-op (128→128), but it serves as a learned "mixing" of the two sources — it's a full matrix multiplication, not just keeping the same numbers.
-
-```python
-        self.se_emb = nn.Embedding(num_ses, d_model)
-```
-
-**`self.se_emb`**: Learnable embedding for side effects. Each side effect (e.g., "nausea", "bradycardia") gets its own 128-dim vector. During training, the model learns to encode each side effect as a vector that captures what kinds of drug combinations are relevant to it.
-
-This is called "learnable" (vs. using a fixed pre-computed similarity vector from a file) because the embedding is trained from scratch via gradient descent, making it fair to compare against the HGNN model.
-
-```python
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=4 * d_model,
-            dropout=0.1,
-            batch_first=True,
-            activation="relu",
-            norm_first=False,
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
-```
-
-**`TransformerEncoderLayer`**: One layer of the Transformer. Internally it runs:
-1. Multi-head self-attention
-2. Add residual + LayerNorm
-3. Feed-forward MLP (input → 4×d_model → d_model)
-4. Add residual + LayerNorm
-
-**`d_model=128`**: The working dimension everywhere in the model.
-
-**`nhead=8`**: 8 attention heads. Each head uses `d_model / nhead = 128 / 8 = 16` dimensions. Having 8 heads means 8 different "views" of drug relationships can be learned simultaneously.
-
-**`dim_feedforward=4 * d_model = 512`**: The feed-forward sublayer expands to 512 dims then back to 128. This expansion-then-compression is standard in Transformers — the wider intermediate layer gives the network more capacity to learn complex transformations.
-
-**`dropout=0.1`**: During training, 10% of activations are randomly zeroed. This prevents the model from memorizing training data (overfitting). It's disabled at inference time.
-
-**`batch_first=True`**: Tells PyTorch the input tensors are `[Batch, Sequence, Features]` rather than `[Sequence, Batch, Features]`. This is just a convention choice.
-
-**`norm_first=False`**: Post-norm: normalization happens after the residual addition (original Transformer design). Pre-norm (norm first) is sometimes more stable for very deep networks, but with only 2 layers, post-norm is fine.
-
-**`num_layers=2`**: Stack 2 of these encoder layers. Layer 1 lets each drug see its immediate neighbors. Layer 2 lets each drug see the enriched representations from layer 1 — effectively capturing second-order interactions.
-
-```python
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=nhead, dropout=0.1, batch_first=True
-        )
-```
-
-**`MultiheadAttention`**: Cross-attention layer. Unlike the encoder above, this one accepts separate `query`, `key`, and `value` arguments — the query will come from the side effect embedding, the key and value will come from the drug representations.
-
-```python
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * d_model, d_model),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(d_model, 1),
-        )
-```
-
-**The final classifier:**
-- Input: 256 dims (128 from cross-attention output + 128 from SE embedding)
-- Hidden: 128 dims with ReLU
-- Dropout 0.3: stronger regularization here since this is the decision layer
-- Output: 1 number (a logit, converted to probability via sigmoid outside)
-
-**Why concatenate both the cross-attention output and the raw SE embedding?** The cross-attention output encodes "how the drug combination relates to this side effect." The raw SE embedding encodes "what this side effect is, independent of the drugs." The MLP gets both: the interaction and the prior.
-
----
-
-#### Forward Pass
-
-```python
-    def forward(self, drugs_pad, mask, se_idx, smiles_tok_all):
-        B, K = drugs_pad.shape
-        drugs_safe = drugs_pad.clamp(min=0)
-```
-
-**`drugs_pad`**: Shape `[B, K]`. A batch of B samples, each containing up to K=16 drug indices. Padding positions contain `-1`.
-
-**`mask`**: Shape `[B, K]`. 1 where a real drug exists, 0 where it's padding.
-
-**`se_idx`**: Shape `[B]`. One side effect index per sample.
-
-**`smiles_tok_all`**: Shape `[num_drugs, 256]`. Pre-tokenized SMILES for every drug in the vocabulary. Stored on GPU to avoid repeated transfers.
-
-**`clamp(min=0)`**: Replaces all `-1` padding values with `0` before using them as embedding indices (you can't index with negative numbers). The mask ensures these padded positions are ignored by the attention layers, so it doesn't matter what index they use.
-
-```python
-        did = self.drug_id_emb(drugs_safe)  # [B, K, 64]
-```
-
-Look up ID embeddings for all drugs. Padding positions get the embedding of drug 0, but will be masked out later.
-
-```python
-        flat = drugs_safe.reshape(-1)
-        uniq, inv = torch.unique(flat, return_inverse=True)
-        smiles_tokens = smiles_tok_all[uniq]          # [U, 256]
-        smiles_uniq = self.smiles_enc(smiles_tokens)  # [U, 64]
-        smiles_feat = smiles_uniq[inv].reshape(B, K, -1)  # [B, K, 64]
-```
-
-**This is an optimization.** In a batch of 512 samples, many samples share the same drugs. Instead of running the CNN 512×16=8192 times, we:
-1. `reshape(-1)`: Flatten all drug indices into one list of B×K = 8192 entries
-2. `torch.unique`: Find the unique drug indices (e.g., only 300 unique drugs)
-3. Run the CNN only on those 300 unique SMILES → `[300, 64]`
-4. `[inv]`: Use the inverse indices to map each of the 8192 entries back to its CNN output
-5. `reshape(B, K, -1)`: Restore the batch×position structure
-
-This can be **20-30x faster** than the naive approach.
-
-```python
-        drug_feat = torch.cat([did, smiles_feat], dim=-1)  # [B, K, 128]
-        drug_feat = self.drug_proj(drug_feat)               # [B, K, d_model]
-```
-
-Concatenate ID and SMILES features along the last dimension, then project.
-
-```python
-        key_padding = (mask == 0)  # True where padding
-        drug_ctx = self.encoder(drug_feat, src_key_padding_mask=key_padding)
-```
-
-**`src_key_padding_mask`**: Tells the Transformer which positions are padding. Where this mask is `True`, those positions are excluded from attention computation — their keys are effectively ignored. This prevents a drug with 3 real drugs from "attending" to 13 meaningless padding vectors.
-
-After the encoder: `drug_ctx` has shape `[B, K, d_model]`. Each drug's representation now contains information about the whole drug set it belongs to.
-
-```python
-        q = self.se_emb(se_idx).unsqueeze(1)  # [B, 1, d_model]
-        attn_out, _ = self.cross_attn(
-            query=q, key=drug_ctx, value=drug_ctx,
-            key_padding_mask=key_padding
-        )
-        combo = attn_out.squeeze(1)   # [B, d_model]
-        se_token = q.squeeze(1)       # [B, d_model]
-```
-
-**Cross-attention step:**
-- The side effect embedding `q` (shape `[B, 1, 128]`) is the single query
-- The drug representations `drug_ctx` (shape `[B, K, 128]`) are the keys and values
-- For each sample, this computes attention scores between the SE and all K drugs:
+| Drug feature `x` | length **2** | length **128** |
+| `W_Q`, `W_K`, `W_V` | **2×2** each | **128×128** each (learned) |
+| Full Q, K, V before split | length **2** | length **128** |
 
 ```
-α[k] = softmax( q · drug_ctx[k]ᵀ / √128 )   for k = 1..K
-combo = Σ_k α[k] · drug_ctx[k]
+Toy:
+  Drug A  x_A = [1.0, 0.0]
+  Drug B  x_B = [0.0, 1.0]
+  Drug C  x_C = [1.0, 1.0]
+
+Actual: each x is 128 numbers from Block 2 (ID‖SMILES + drug_proj).
 ```
 
-- `attn_out` has shape `[B, 1, 128]`; `.squeeze(1)` removes the length-1 sequence dimension to get `[B, 128]`
-- The `_` second return value is the attention weight matrix itself — discarded here, but could be visualized for interpretability
-
-```python
-        logits = self.mlp(torch.cat([combo, se_token], dim=-1)).squeeze(-1)
-        return logits
-```
-
-Concatenate the cross-attention output and SE embedding → pass through MLP → single logit per sample. The `.squeeze(-1)` removes the trailing dimension 1 to give shape `[B]`.
-
-**Note:** The logit is a raw score (any real number). Converting it to a probability requires `sigmoid(logit)`. The model returns raw logits rather than probabilities because the loss function (`BCEWithLogitsLoss`) combines sigmoid and cross-entropy in one numerically stable operation.
-
----
-
-### 5.4 Data Loading and Preparation
-
-```python
-def load_and_prepare():
-    df = pd.read_csv(HODDI_CSV)
-    df["DrugBankID"] = df["DrugBankID"].apply(
-        lambda x: ast.literal_eval(x) if isinstance(x, str) else x
-    )
-```
-
-The `DrugBankID` column stores drug lists as strings like `"['DB00001', 'DB00002']"`. `ast.literal_eval` safely parses this string into an actual Python list.
-
-```python
-    df["y"] = (df["hyperedge_label"] == 1).astype(np.int64)
-```
-
-Creates the binary target: 1 if the drug combination is labeled as causing the side effect (toxic interaction), 0 otherwise.
-
-```python
-    all_drugs = sorted({d for lst in df["DrugBankID"] for d in lst})
-    drug2idx = {d: i for i, d in enumerate(all_drugs)}
-```
-
-Builds a vocabulary mapping: each unique DrugBank ID gets an integer index. Sorting ensures this mapping is deterministic across runs.
-
-```python
-    all_ses = sorted(df["SE_label"].unique().tolist())
-    se2idx = {s: i for i, s in enumerate(all_ses)}
-    df["se_idx"] = df["SE_label"].map(se2idx).astype(np.int64)
-```
-
-Same thing for side effects — each unique side effect name gets an integer index.
-
-```python
-    chars = set()
-    for s in drug2smiles.values():
-        if isinstance(s, str) and len(s) > 0:
-            chars.update(list(s))
-    char2idx = {c: i + 1 for i, c in enumerate(sorted(chars))}
-    char2idx["<UNK>"] = len(char2idx) + 1
-    smiles_vocab_size = len(char2idx) + 1
-```
-
-Builds a character-level vocabulary for SMILES. Index 0 is reserved for padding (hence `i + 1`). `<UNK>` handles any character at inference time that wasn't in training data. `smiles_vocab_size` is +1 for the padding index 0.
-
-```python
-    smiles_tok = np.zeros((len(drug2idx), MAX_SMILES_LEN), dtype=np.int64)
-    for drug, di in drug2idx.items():
-        s = drug2smiles.get(drug, None)
-        if not isinstance(s, str) or len(s) == 0:
-            s = "C"   # fallback: carbon atom (simplest valid molecule)
-        toks = [char2idx.get(ch, unk) for ch in s[:MAX_SMILES_LEN]]
-        smiles_tok[di, :len(toks)] = toks
-    smiles_tok = torch.from_numpy(smiles_tok)
-```
-
-Pre-tokenizes every drug's SMILES string into a `[num_drugs, 256]` integer tensor. This is done once and stored — the CNN reads from this table during every forward pass. The fallback `"C"` (a single carbon atom) handles drugs with missing SMILES data gracefully.
-
-```python
-def quarter_split(df, train_frac=0.70, val_frac=0.15):
-    quarters = sorted(df["time"].unique())
-    n = len(quarters)
-    train_end = int(train_frac * n)
-    val_end = train_end + int(val_frac * n)
-    return quarters[:train_end], quarters[train_end:val_end], quarters[val_end:]
-```
-
-**Chronological split**: Data is split by time quarter (Q1 2014, Q2 2014, ...) rather than randomly. 70% of quarters go to training, 15% to validation, 15% to test.
-
-**Why chronological?** If you split randomly, the model can "see the future" — it might learn from drug reports from Q4 2023 while predicting reports from Q1 2023. A chronological split is a stricter and more realistic evaluation: the model must generalize to *future* data it has never seen.
-
----
-
-### 5.5 Packing Drug Sets into Fixed-Size Tensors
-
-```python
-def pack_split(split_df, drug2idx):
-    N = len(split_df)
-    drugs_pad = np.full((N, MAX_DRUGS), -1, dtype=np.int64)
-    mask = np.zeros((N, MAX_DRUGS), dtype=np.int64)
-
-    for i, lst in enumerate(split_df["DrugBankID"].tolist()):
-        lst = sorted(set(lst))              # deterministic, deduplicated
-        idxs = [drug2idx[d] for d in lst[:MAX_DRUGS]]
-        drugs_pad[i, :len(idxs)] = idxs
-        mask[i, :len(idxs)] = 1
-
-    return {
-        "drugs_pad": torch.from_numpy(drugs_pad),
-        "mask": torch.from_numpy(mask),
-        "se_idx": torch.from_numpy(split_df["se_idx"].to_numpy(np.int64)),
-        "y": torch.from_numpy(split_df["y"].to_numpy(np.int64)),
-    }
-```
-
-Converts the variable-length drug lists into a fixed `[N, MAX_DRUGS]` matrix.
-
-- `np.full(..., -1)`: Initialize everything to -1 (the padding sentinel)
-- `sorted(set(lst))`: Deduplicate (in case a drug appears twice) and sort (for deterministic truncation)
-- `lst[:MAX_DRUGS]`: Truncate combos longer than 16
-- `mask[i, :len(idxs)] = 1`: Mark real positions
-
-**Visualization for a 3-drug combo in a MAX_DRUGS=5 world:**
+The model does **not** use `x` raw for scoring. For each drug it builds **three** new vectors with three linear maps:
 
 ```
-drugs_pad[i] = [  4,  17, 203,  -1,  -1 ]
-mask[i]      = [  1,   1,   1,   0,   0 ]
+Q_full = x · W_Q     # Query   Actual: [128]
+K_full = x · W_K     # Key     Actual: [128]
+V_full = x · W_V     # Value   Actual: [128]
 ```
 
----
-
-### 5.6 Set Invariance Augmentation
-
-```python
-def permute_drug_order(drugs_pad, mask):
-    B, K = drugs_pad.shape
-    out = drugs_pad.clone()
-    for i in range(B):
-        m = mask[i].bool()
-        vals = out[i, m]
-        if vals.numel() > 1:
-            perm = torch.randperm(vals.numel(), device=vals.device)
-            out[i, m] = vals[perm]
-    return out
-```
-
-Called once per training batch, this randomly shuffles the order of real drugs within each sample.
-
-**Why?** Drug sets are mathematical sets — order is meaningless. {Aspirin, Ibuprofen} is the same as {Ibuprofen, Aspirin}. But when stored in a tensor, position matters. Without this augmentation, the model might learn "the first drug listed is most important" — a spurious pattern.
-
-By randomly shuffling at every training step, the model is forced to learn representations that don't depend on order. This is called **set invariance** and is a key theoretical property for this task.
-
-**Note:** At evaluation time, drugs are sorted deterministically (`sorted(set(lst))`), so results are reproducible.
-
----
-
-### 5.7 The Training Loop
-
-```python
-model = PolyFormerLearnableSE(
-    num_drugs=len(drug2idx),
-    smiles_vocab_size=smiles_vocab_size,
-    num_ses=len(se2idx),
-    d_model=128,
-    nhead=8,
-    num_layers=2
-).to(device)
-
-opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-crit = nn.BCEWithLogitsLoss()
-sched = ReduceLROnPlateau(opt, mode="max", factor=0.1, patience=10)
-```
-
-**`AdamW` optimizer**: A gradient-based optimization algorithm. It maintains a running estimate of the gradient magnitude for each parameter (adaptive learning rates) and adds weight decay as a regularizer. Weight decay penalizes large weights, preventing overfitting:
+**Concrete toy weights** (stand-ins for the real 128×128 matrices):
 
 ```
-loss_total = loss_task + weight_decay × Σ(w²)
+W_Q = [[1, 0],      W_K = [[0, 1],      W_V = [[1, 0],
+       [0, 1]]             [1, 0]]             [0, 1]]
 ```
 
-**`BCEWithLogitsLoss`**: Binary Cross-Entropy Loss for binary classification. For a predicted logit `z` and true label `y` ∈ {0, 1}:
+For drug A (`x_A = [1, 0]`):
 
 ```
-p = sigmoid(z) = 1 / (1 + e^(-z))
-
-loss = -[ y · log(p) + (1 - y) · log(1 - p) ]
+Q_A = [1, 0] · W_Q = [1, 0]     # “what A is looking for”
+K_A = [1, 0] · W_K = [0, 1]     # “how A presents itself to others’ searches”
+V_A = [1, 0] · W_V = [1, 0]     # “what content A will contribute if attended”
 ```
 
-If the true label is 1 and the model predicts p=0.9: `loss = -log(0.9) ≈ 0.1` (small, good)  
-If the true label is 1 and the model predicts p=0.1: `loss = -log(0.1) ≈ 2.3` (large, bad)
+| Drug | x (toy / actual) | Q | K | V |
+|---|---|---|---|---|
+| A | [1,0] / ℝ¹²⁸ | [1,0] / ℝ¹²⁸ | [0,1] / ℝ¹²⁸ | [1,0] / ℝ¹²⁸ |
+| B | [0,1] / ℝ¹²⁸ | [0,1] / ℝ¹²⁸ | [1,0] / ℝ¹²⁸ | [0,1] / ℝ¹²⁸ |
+| C | [1,1] / ℝ¹²⁸ | [1,1] / ℝ¹²⁸ | [1,1] / ℝ¹²⁸ | [1,1] / ℝ¹²⁸ |
 
-The model is penalized heavily for confident wrong predictions.
+**Intuition:**
 
-**`ReduceLROnPlateau`**: A learning rate scheduler. If the validation AUC doesn't improve for `patience=10` consecutive epochs, the learning rate is multiplied by `factor=0.1` (i.e., cut to 10% of current value). This helps the model make finer adjustments as training progresses.
-
-```python
-use_amp = (device.type == "cuda")
-scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
-```
-
-**Automatic Mixed Precision (AMP)**: Uses 16-bit floats (half precision) instead of 32-bit where safe, cutting memory usage roughly in half and speeding up GPU computation. The `GradScaler` compensates for the reduced precision during gradient computation to avoid numerical underflow.
-
-```python
-for epoch in range(1, max_epochs + 1):
-    for batch in batch_iter(train_t, batch_size, shuffle=True):
-
-        drugs_pad = permute_drug_order(drugs_pad, mask)   # set invariance
-
-        opt.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            logits = model(drugs_pad, mask, se_idx, smiles_tok_t)
-            loss = crit(logits, y)
-
-        scaler.scale(loss).backward()
-        scaler.step(opt)
-        scaler.update()
-```
-
-**The core training loop:**
-1. `permute_drug_order`: Shuffle drug order for set invariance
-2. `zero_grad`: Clear gradients from the previous step (PyTorch accumulates by default)
-3. `autocast`: Use mixed precision for the forward pass
-4. `model(...)`: Forward pass → logits
-5. `crit(logits, y)`: Compute loss
-6. `loss.backward()`: Backpropagation — compute gradients of the loss w.r.t. every parameter
-7. `scaler.step(opt)`: Update all parameters using the computed gradients
-8. `scaler.update()`: Update the gradient scaler for next iteration
-
-```python
-        if val_metrics["roc_auc"] > best_val_auc:
-            best_val_auc = val_metrics["roc_auc"]
-            patience_ctr = 0
-            torch.save({...}, OUT_MODEL)
-        else:
-            patience_ctr += 1
-
-        if patience_ctr >= patience:  # patience = 25
-            print(f"Early stopping.")
-            break
-```
-
-**Early stopping**: Save the model only when validation AUC improves. If it hasn't improved for 25 consecutive epochs, stop training entirely and use the best saved checkpoint. This prevents overfitting (the model memorizing training data at the expense of generalizing to new data).
-
----
-
-### 5.8 Evaluation
-
-```python
-def eval_model(model, split_tensors, smiles_tok_t, device, batch_size=2048):
-    model.eval()
-    ...
-    with torch.no_grad():
-        ...
-        probs = torch.sigmoid(logits)
-```
-
-**`model.eval()`**: Switches off dropout and batch normalization update behaviour. The model becomes deterministic.
-
-**`torch.no_grad()`**: Disables gradient tracking during evaluation. Since we're not doing backpropagation, this saves memory and speeds up inference.
-
-**Metrics computed:**
-
-| Metric | What it measures |
+| Vector | Analogy |
 |---|---|
-| **ROC-AUC** | How well the model separates positives from negatives across all thresholds. 1.0 = perfect, 0.5 = random. This is the primary metric. |
-| **PR-AUC** | Area under the Precision-Recall curve. More informative than ROC-AUC when the dataset is imbalanced (many more negatives than positives). |
-| **F1-Score** | Harmonic mean of Precision and Recall. Penalizes models that sacrifice one for the other. |
-| **Accuracy** | Fraction of correct predictions. Can be misleading with imbalanced data. |
-| **Precision** | Of all samples predicted positive, what fraction actually are? |
-| **Recall** | Of all actual positives, what fraction did the model find? |
-| **Confusion Matrix** | Full breakdown of TP, FP, TN, FN counts. |
+| **Query** | The search text you type |
+| **Key** | The title/tag on each book |
+| **Value** | The book contents you get if you pick it |
 
----
+Same drug → three different views because `W_Q`, `W_K`, `W_V` differ.
 
-## 6. End-to-End Data Flow (One Prediction)
+**Actual one-liner for one drug:**  
+`x ∈ ℝ¹²⁸` → three matrices → **`Q_full, K_full, V_full` each ∈ ℝ¹²⁸** (not 16 yet).
 
-Let's trace a single prediction: *Do [DB00001, DB00002, DB00003] cause "nausea"?*
+### 6.3 What “matching” means
+
+Matching = how well drug *i*’s **Query** lines up with drug *j*’s **Key** (dot product).
 
 ```
-Input:
-  drugs_pad = [[12, 47, 203, -1, -1, ..., -1]]   shape [1, 16]
-  mask      = [[1,  1,  1,  0,  0, ...,  0 ]]    shape [1, 16]
-  se_idx    = [7]                                  shape [1]   ("nausea" = index 7)
+Toy (vectors length 2; scale √2):
+  match(A, B) = Q_A · K_B = 1·1 + 0·0 = 1.0
+  match(A, A) = Q_A · K_A = 1·0 + 0·1 = 0.0
+  match(A, C) = Q_A · K_C = 1·1 + 0·1 = 1.0
 
-Step 1 — Drug ID embeddings:
-  drug_id_emb([12, 47, 203, 0, 0, ..., 0])
-  → did = [B, 16, 64]   (padding positions use drug-0 embedding, will be masked)
-
-Step 2 — SMILES CNN:
-  Look up SMILES for drugs 12, 47, 203 from smiles_tok_all
-  Run CNN → [U, 64] for unique drugs
-  Map back → smiles_feat = [1, 16, 64]
-
-Step 3 — Concatenate and project:
-  drug_feat = cat([did, smiles_feat], dim=-1) → [1, 16, 128]
-  drug_feat = drug_proj(drug_feat)            → [1, 16, 128]
-
-Step 4 — Transformer self-attention:
-  (padding mask: positions 3..15 are ignored)
-  drug_ctx = encoder(drug_feat)               → [1, 16, 128]
-  Now drug 12's representation incorporates context from drugs 47 and 203.
-
-Step 5 — Cross-attention:
-  q = se_emb([7]).unsqueeze(1)                → [1, 1, 128]
-  cross_attn(q, drug_ctx, drug_ctx)           → [1, 1, 128]
-  combo = squeeze                             → [1, 128]
-
-  Internally: "nausea" computes attention scores against each of the 3 real drugs,
-  takes a weighted sum of their representations.
-
-Step 6 — MLP:
-  se_token = [1, 128]
-  input = cat([combo, se_token])              → [1, 256]
-  mlp(input)                                  → [1, 1]
-  squeeze                                     → [1]
-  logit = 1.06
-
-Step 7 — Probability:
-  prob = sigmoid(1.06) ≈ 0.74
-
-Output: 74% probability that [DB00001, DB00002, DB00003] causes "nausea"
+Actual (before multi-head split, if you did one big head):
+  match(i,j) = (Q_full_i · K_full_j) / √128
+  # both vectors length 128; one scalar score
 ```
 
----
+High match → pay more attention. Softmax over the other drugs → percentages:
 
-## 7. Design Decisions and Why
+```
+Toy:  scores_A ≈ [0.00, 0.71, 0.71] → α_A ≈ [0.21, 0.40, 0.40]
+Actual: α still sums to 1 over the real drugs in the set (pads masked to 0)
+```
 
-| Decision | Rationale |
+Matching uses **Q vs K only**. **V** is mixed afterward.
+
+### 6.4 Mixing Values → new drug vector (single-head toy)
+
+```
+Toy (V length 2):
+  new_A ≈ 0.21·[1,0] + 0.40·[0,1] + 0.40·[1,1] ≈ [0.61, 0.80]
+
+Actual single-head analogue:
+  new_A = Σ_j α_j · V_full_j     → length 128
+```
+
+In the **real** PolyFormer this full-128 attention is **not** run as one head — it is split into 8 heads (next subsection), then patched back to 128.
+
+### 6.5 Multi-head (actual: 8 heads) — create 128, split, attend, patch back
+
+This is what the code actually does (`nhead=8`, `d_model=128` → `d_head = 16`).
+
+**Step 1 — Create full Q, K, V (length 128)**  
+Same as §6.2: for each drug, `x ∈ ℝ¹²⁸` → `Q_full, K_full, V_full ∈ ℝ¹²⁸`.
+
+**Step 2 — Split each into 8 heads of length 16**
+
+```
+Q_full [128] = [ Q₀(16) | Q₁(16) | Q₂(16) | … | Q₇(16) ]
+K_full [128] = [ K₀(16) | K₁(16) | … ]
+V_full [128] = [ V₀(16) | V₁(16) | … ]
+```
+
+| | Toy analogue | Actual |
+|---|---|---|
+| Full Q/K/V | length 2 (we don’t split the toy) | length **128** |
+| Per head | — | length **16** |
+| Number of heads | 1 | **8** |
+| W that makes Q_full | 2×2 | **128×128** (not 16×16) |
+
+So **16** = length of each head’s Q/K/V **vectors**, not a 16×16 weight matrix. The map is **128 → 128** then chop, or equivalently eight maps **128 → 16**.
+
+**Step 3 — Attention inside each head** (same matching + softmax + mix as §6.3–6.4, but on 16-dim vectors)
+
+```
+For head h, drug A:
+  score(A,j) = (Q_h_A · K_h_j) / √16      # both length 16
+  α = softmax over drugs
+  out_h_A = Σ_j α_j · V_h_j               # length 16
+```
+
+Do this for heads `h = 0..7` → eight outputs of length 16.
+
+**Step 4 — Patch back to 128**
+
+```
+out_A = concat(out_0, out_1, …, out_7)    # 8×16 = 128
+out_A = out_A · W_O                       # output projection, still 128
+```
+
+| Stage | Actual shape per drug |
 |---|---|
-| **Condition on side effect at input** | Allows side-effect-specific drug weighting via cross-attention. More expressive than a multi-label output head. |
-| **Learnable SE embeddings** | Fair comparison with HGNN which also learns SE representations from scratch. Avoids privileging PolyFormer with external signal. |
-| **CNN for SMILES** | Fast, local pattern detection is what chemistry needs. Avoids the quadratic cost of self-attention on 256-character sequences per drug. |
-| **Two-source drug features (ID + SMILES)** | ID captures behavioral patterns from interaction data; SMILES captures chemical structure. Complementary, each fills the other's gaps. |
-| **Quarter-wise chronological split** | Simulates real deployment: model trained on past data, evaluated on future data. Prevents temporal leakage. |
-| **Set invariance via permutation** | Drug sets are unordered; augmentation teaches the model this fundamental property of the task. |
-| **`MAX_DRUGS=16` truncation** | Covers ~99% of dataset. Deterministic truncation (sorted alphabetically) is stable and reproducible. |
-| **Early stopping with patience=25** | Prevents overfitting; saves the best model rather than the final one. |
-| **AMP (mixed precision)** | Halves GPU memory usage, typically 1.5–2× speedup with negligible accuracy loss. |
+| Input `x` | **[128]** |
+| `Q_full`, `K_full`, `V_full` | **[128]** each |
+| Per-head Q/K/V | **[16]** each × 8 heads |
+| Per-head attention output | **[16]** × 8 |
+| After concat (+ `W_O`) | **[128]** |
+
+**Toy vs actual reminder:** the worked numbers in §6.2–6.4 use length-2 vectors so you can multiply by hand = **one tiny head**. The real model does that recipe **eight times** on length-16 chunks of the length-128 Q/K/V, then concatenates.
+
+### 6.6 Full encoder layer — what “self-attn + residual + LN + FFN …” means
+
+One `TransformerEncoderLayer` is **not** only attention. It is a small recipe applied to every drug vector:
+
+```
+Input:  x          Actual: 128-dim per drug   (toy above used 2-dim)
+
+①  attn_out = MultiHeadSelfAttention(x)   # §6.5 → still 128-dim
+②  x = LayerNorm( x + attn_out )          # residual: both terms 128-dim
+③  ffn_out  = FFN(x)                      # Linear 128→512 → ReLU → 128
+④  x = LayerNorm( x + ffn_out )           # again 128-dim
+
+Output: still 128-dim per drug
+        for one sample with pads: drug_ctx [16, 128]
+```
+
+**Residual (`x + attn_out`):** keep the original vector and **add** the attention result. So the drug never loses its own identity completely; attention only adds a delta. Also helps training (gradients flow through the `+ x` path).
+
+Toy residual (length 2; actual both sides length **128**):
+
+```
+x_A before attn     = [1.0, 0.0]                 Actual: ℝ¹²⁸
+attn new_A          = [0.61, 0.80]               Actual: ℝ¹²⁸ after concat heads
+x_A after residual  = [1.61, 0.80]               Actual: ℝ¹²⁸
+```
+
+**LayerNorm:** re-scales that vector so its numbers stay in a stable range (across the **128** features). Think “keep sizes well-behaved.”
+
+**FFN (feed-forward):** a tiny MLP on **each drug alone** (no mixing between drugs here):
+
+```
+Actual: 128 → 512 → ReLU → 128
+```
+
+Attention mixes **across drugs** (who to listen to + weighted average of Values). That mostly *combines* features; it is a weak *rewriter*. The FFN adds nonlinear capacity so each drug can reshape its already-mixed vector into something more useful for the next layer / cross-attention. Pattern: **mix across drugs → think per drug → repeat**.
+
+Then another residual + LayerNorm.
+
+### 6.7 Why stack 2 layers
+
+```
+Layer 1: each drug sees raw neighbours → richer vectors
+Layer 2: each drug sees those already-enriched vectors → “second-order” mixing
+```
+
+After 2 layers → `drug_ctx` shape **`[B, 16, 128]`**.
+
+### The Code
+
+```python
+enc_layer = nn.TransformerEncoderLayer(
+    d_model=128, nhead=8, dim_feedforward=512,
+    dropout=0.1, batch_first=True, activation="relu",
+)
+self.encoder = nn.TransformerEncoder(enc_layer, num_layers=2)
+
+key_padding = (mask == 0)  # True = ignore pad slots
+drug_ctx = self.encoder(drug_feat, src_key_padding_mask=key_padding)  # [B, K, 128]
+```
+
+**vs HGNN:** HGNN mixes drugs through a **hypergraph** over prescriptions. PolyFormer mixes them only **inside this sample’s set** via Q/K/V attention.
 
 ---
 
-## 8. Limitations
+## 7. Block 4 — Cross-Attention (side effect queries drugs)
 
-**1. It is a scorer, not a generator.**  
-You must query each side effect individually. To find all side effects a drug combo might cause, you run N_side_effects forward passes.
+### 7.1 What we want
 
-**2. Truncation of large combos.**  
-Drug sets with more than 16 drugs are silently truncated. The first 16 (alphabetically sorted) are used. For clinical scenarios with very large polypharmacy regimens, this introduces information loss.
+After Block 3 we still have **up to 16** drug vectors. We need **one** combo vector for the classifier — and the focus should depend on the **side effect**.
 
-**3. Closed vocabulary.**  
-The model cannot predict interactions for drugs not seen during training (no drug ID embedding exists for them). SMILES-only inference is possible but the ID embedding would be absent.
+> SE asks: “For *GI bleeding*, which of these drugs should I weigh more?”
 
-**4. No temporal dynamics.**  
-The model treats all training data as static. It doesn't model how interaction patterns might shift over time, even though the data spans from 2014 to 2024.
+### 7.2 How Q, K, V are made here (different sources)
 
-**5. Binary labels.**  
-Each (drug set, side effect) pair is labeled 0 or 1. Severity, frequency, and mechanism are not modeled.
+Same three roles, but **Query does not come from a drug**:
+
+| Role | Where it comes from in cross-attn |
+|---|---|
+| **Query Q** | Side-effect embedding only (one vector) |
+| **Key K** | Each drug’s `drug_ctx` (after self-attn) |
+| **Value V** | Each drug’s `drug_ctx` (same as K in this code) |
+
+In code, `MultiheadAttention` still applies learned projections, but conceptually:
+
+```
+Q_SE = se_emb("GI bleeding")     # one 128-dim query  (toy below: 2-dim)
+K_A, K_B, K_C = drug_ctx vectors
+V_A, V_B, V_C = same drug_ctx vectors
+```
+
+**Toy numbers** (2-dim):
+
+```
+Q_SE = [1.0, 0.0]          # “I care about slot 0”
+
+drug_ctx after self-attn:
+  A = [0.80, 0.60]
+  B = [0.60, 0.80]
+  C = [0.75, 0.75]
+```
+
+(For a minimal demo, treat K = V = drug_ctx, as if W_K = W_V = I.)
+
+### 7.3 Matching (SE vs each drug) — full numbers
+
+```
+match(SE, A) = Q_SE · A = 1.0·0.80 + 0.0·0.60 = 0.80
+match(SE, B) = Q_SE · B = 1.0·0.60 + 0.0·0.80 = 0.60
+match(SE, C) = Q_SE · C = 1.0·0.75 + 0.0·0.75 = 0.75
+```
+
+Divide by `√d` (toy `√2 ≈ 1.414`; actual `√128`):
+
+```
+scores = [0.80, 0.60, 0.75] / 1.414 ≈ [0.566, 0.424, 0.530]
+```
+
+Softmax (same recipe as HGNN primer):
+
+```
+e^0.566 ≈ 1.761
+e^0.424 ≈ 1.528
+e^0.530 ≈ 1.700
+sum ≈ 4.989
+
+α_A = 1.761 / 4.989 ≈ 0.353
+α_B = 1.528 / 4.989 ≈ 0.306
+α_C = 1.700 / 4.989 ≈ 0.341
+check: 0.353 + 0.306 + 0.341 = 1.000
+```
+
+So for “GI bleeding,” the model focuses **~35% A, ~31% B, ~34% C**.
+
+**Matching still means:** high Q·K → that drug gets more weight. Here the searcher is the side effect.
+
+**Actual:** Q is length **128**, each K is length **128**, score is still one scalar per drug; α still sums to 1 over real drugs (pads masked).
+
+### 7.4 Mix Values → one combo vector (worked numbers)
+
+The cross-attn **output** is not a rewrite of the stored `se_emb` table row. It is a **new** vector (same size as Q) = weighted mix of the drug **Values**. In this model that output is called `combo`.
+
+Toy (V = drug_ctx, length 2; actual each V ∈ ℝ¹²⁸, combo ∈ ℝ¹²⁸):
+
+```
+combo = 0.353·A + 0.306·B + 0.341·C
+
+slot0 = 0.353·0.80 + 0.306·0.60 + 0.341·0.75
+      = 0.282 + 0.184 + 0.256
+      = 0.722
+
+slot1 = 0.353·0.60 + 0.306·0.80 + 0.341·0.75
+      = 0.212 + 0.245 + 0.256
+      = 0.713
+
+combo ≈ [0.722, 0.713]
+```
+
+Compare to the raw SE query `[1.0, 0.0]`: the output has been **filled with drug content** according to α. That is what “the SE query gets answered / updated” means in the forward pass.
+
+Unlike self-attention (one updated vector **per drug**), one SE query → **one** combo vector.
+
+### 7.5 Different SE → different combo (full numbers)
+
+Now SE query `Q_SE = [0.0, 1.0]` (“care about slot 1”):
+
+```
+match(SE, A) = 0·0.80 + 1·0.60 = 0.60
+match(SE, B) = 0·0.60 + 1·0.80 = 0.80
+match(SE, C) = 0·0.75 + 1·0.75 = 0.75
+
+scores / √2 ≈ [0.424, 0.566, 0.530]
+
+e^0.424 ≈ 1.528
+e^0.566 ≈ 1.761
+e^0.530 ≈ 1.700
+sum ≈ 4.989
+
+α_A ≈ 0.306   α_B ≈ 0.353   α_C ≈ 0.341
+```
+
+B is now the heaviest (was lightest for GI bleeding).
+
+```
+combo_hyp slot0 = 0.306·0.80 + 0.353·0.60 + 0.341·0.75
+                = 0.245 + 0.212 + 0.256 = 0.713
+
+combo_hyp slot1 = 0.306·0.60 + 0.353·0.80 + 0.341·0.75
+                = 0.184 + 0.282 + 0.256 = 0.722
+
+combo_hyp ≈ [0.713, 0.722]   ≠   combo_GI ≈ [0.722, 0.713]
+```
+
+Same drugs, different question → different α → different combo.
+
+### 7.6 Residuals / FFN?
+
+In **this** codebase, cross-attention is a single `nn.MultiheadAttention` call — **not** wrapped in a full Transformer encoder layer. So you get Q/K/V attention + the module’s internal projections, then go straight to the MLP classifier. The residual+LN+FFN stack is only on the **self-attention encoder** (Block 3).
+
+### The Code
+
+```python
+self.cross_attn = nn.MultiheadAttention(
+    embed_dim=128, num_heads=8, dropout=0.1, batch_first=True
+)
+
+q = self.se_emb(se_idx).unsqueeze(1)          # [B, 1, 128]  ← Query from SE
+attn_out, _ = self.cross_attn(
+    query=q, key=drug_ctx, value=drug_ctx,    # K,V from drugs
+    key_padding_mask=key_padding,
+)
+combo = attn_out.squeeze(1)                   # [B, 128]
+```
+
+| | Self-attention (Block 3) | Cross-attention (Block 4) |
+|---|---|---|
+| Q from | every drug | side effect only |
+| K, V from | every drug | every drug |
+| Output | updated vector **per drug** `[K, 128]` | **one** combo `[128]` |
 
 ---
 
-*This document was written to explain the `polyformer_train.py` implementation found in `src/`.*  
-*For the companion HGNN model, see `src/HGNN_train.py`.*
+## 8. Block 5 — Prediction Head
+
+Same pattern as HGNN §8:
+
+```
+concat(combo [128], SE [128]) → [256]
+  → Linear 256→128 → ReLU → Dropout(0.3) → Linear 128→1 → logit
+probability = σ(logit)
+loss = BCEWithLogits  (worked numbers: explanationHGNN.md §8)
+```
+
+```python
+logits = self.mlp(torch.cat([combo, se_token], dim=-1)).squeeze(-1)
+```
+
+Why concat combo **and** raw SE: combo = how the set relates to this SE; raw SE = what the SE is on its own.
+
+---
+
+## 9. Data Preparation
+
+### Shared with HGNN
+
+Dataset columns, chronological **70/15/15** quarter split, SMILES tokenisation → `explanationHGNN.md` §9.
+
+### PolyFormer-specific: packing a set
+
+```python
+drugs_pad[i] = [idx0, idx1, ..., -1, -1]  # length MAX_DRUGS=16
+mask[i]      = [1, 1, ..., 0, 0]
+```
+
+- `sorted(set(lst))` then truncate to 16 (deterministic)
+- Combos longer than 16 lose the rest
+
+### Set-invariance augmentation (train only)
+
+Each batch, shuffle the **real** drug slots so the model cannot latch onto “first position = most important.” At eval, order stays sorted/fixed.
+
+### Drop 1-drug rows
+
+PolyFormer keeps rows with **≥ 2** drugs. HGNN does not apply that filter the same way.
+
+---
+
+## 10. Training Loop
+
+Same spirit as HGNN: AdamW, `BCEWithLogitsLoss`, `ReduceLROnPlateau` on val AUC, early stop patience 25, save best checkpoint.
+
+Differences:
+
+- **Mini-batches** (e.g. 512), not one full-graph step
+- Optional AMP on CUDA
+- Logs train/val each epoch; evaluates **train / val / test** on the best checkpoint
+
+**Outputs (after you run** `src/polyformer_train.py`**):**
+
+
+| File                                   | Contents                              |
+| -------------------------------------- | ------------------------------------- |
+| `results/Evaluate_PolyFormer.txt`      | Train/val/test metrics + overfit gaps |
+| `results/PolyFormer_train_history.csv` | Per-epoch train/val AUC etc.          |
+| `results/PolyFormer_split_metrics.csv` | Final split summary table             |
+| `models/polyformer_model.pt`           | Best weights + vocabs                 |
+
+
+---
+
+## 11. Evaluation
+
+Load best checkpoint → `model.eval()` → sigmoid → threshold 0.5.  
+Metric meanings: `explanationHGNN.md` §11.
+
+Primary number: **test ROC-AUC** on future quarters. Compare to **train** AUC in the report to spot overfitting.
+
+---
+
+## 12. End-to-End Data Flow Summary
+
+```
+Row: drugs [DB001, DB002, DB003], SE=nausea
+        │
+        ▼ pack → drugs_pad [16], mask, se_idx
+        │
+        ├─ ID emb + SmilesEncoder → [16, 64] each
+        ├─ cat + drug_proj → drug_feat [16, 128]
+        │
+        ▼ TransformerEncoder × 2 (self-attn, pads masked)
+        │
+        drug_ctx [16, 128]   # each drug sees the others
+        │
+        ▼ SE emb → query; cross-attn over drug_ctx
+        │
+        combo [128]
+        │
+        ▼ cat(combo, SE) → MLP → logit → σ → probability
+```
+
+Illustrative trail:
+
+```
+3 real drugs → self-attn mixes them
+SE "nausea" → α e.g. [0.33, 0.28, 0.39] over those 3
+combo → MLP → logit 1.06 → σ ≈ 0.74
+```
+
+---
+
+## 13. PolyFormer vs HGNN (quick)
+
+
+|                  | HGNN-SA                            | PolyFormer                                 |
+| ---------------- | ---------------------------------- | ------------------------------------------ |
+| Drug mixing      | Hypergraph conv over prescriptions | Self-attn inside each set                  |
+| Pooling vs SE    | Attn-pool drugs **then** concat SE | SE **queries** drugs (cross-attn) then MLP |
+| Batching         | Full train hypergraph / epoch      | Mini-batches of padded sets                |
+| Shared front-end | SMILES CNN + ID + linear fuse      | Same idea                                  |
+
+
+Same prediction task and chronological split; different inductive bias for how drugs talk and when the side effect enters.
+
+---
+
+*Implementation:* `src/polyformer_train.py`*. Companion:* `explanations/explanationHGNN.md`*.*
