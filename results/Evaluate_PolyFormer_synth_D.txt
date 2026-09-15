@@ -1,0 +1,25 @@
+
+======================================================================
+EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
+======================================================================
+Experiment tag: synth_D_drug_corrupt_subset_aware
+Data CSV: data/hoddi_synth_D.csv
+Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
+SE representation: Learnable embedding (fair vs HGNN-SA)
+Split: Strict quarter-wise chronological 70/15/15 (same as HGNN-SA)
+Combo size handling: No filtering; drug sets truncated to MAX_DRUGS=16 (deterministic)
+
+FINAL TEST SET METRICS (Unseen Future Data):
+----------------------------------------------------------------------
+ROC-AUC (Main Metric) : 0.7923
+PR-AUC                : 0.8102
+F1-Score              : 0.6598
+Accuracy              : 0.7181
+Precision             : 0.8320
+Recall                : 0.5467
+
+CONFUSION MATRIX:
+                     Predicted Safe (0) | Predicted Toxic (1)
+Actual Safe (0)    : 11641              | 1445
+Actual Toxic (1)   : 5933               | 7155
+======================================================================

@@ -1,0 +1,5 @@
+scheme,description,roc_auc,pr_auc,f1,accuracy,precision,recall,n_positives,n_negatives,n_failed_negatives,subset_contamination_among_accepted_negatives,subset_reject_rate_approx
+A,HODDI official (drug+SE corrupt),0.9678,0.9672,0.894,0.8988,0.9384,0.8536,,,,,
+B,drug_corrupt (keep SE),0.7802,0.7987,0.6559,0.7098,0.8057,0.553,,,,,
+C,se_corrupt (keep combo),0.8905,0.8925,0.8157,0.8157,0.8159,0.8155,,,,,
+D,drug_corrupt_subset_aware,0.7923,0.8102,0.6598,0.7181,0.832,0.5467,,,,,

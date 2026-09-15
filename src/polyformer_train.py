@@ -1,3 +1,4 @@
+import argparse
 import ast
 import random
 import numpy as np
@@ -34,6 +35,7 @@ MAX_SMILES_LEN = 256
 
 OUT_MODEL = "models/polyformer_model.pt"
 OUT_REPORT = "results/Evaluate_PolyFormer.txt"
+REPORT_TAG = ""
 
 
 # ==========================================================
@@ -78,7 +80,9 @@ class PolyFormerLearnableSE(nn.Module):
             activation="relu",
             norm_first=False,
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        self.encoder = nn.TransformerEncoder(
+            enc_layer, num_layers=num_layers, enable_nested_tensor=False
+        )
 
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=d_model, num_heads=nhead, dropout=0.1, batch_first=True
@@ -142,9 +146,10 @@ def quarter_split(df, train_frac=0.70, val_frac=0.15):
     return quarters[:train_end], quarters[train_end:val_end], quarters[val_end:]
 
 
-def load_and_prepare():
-    print("Loading HODDI (NO combo-size filter)...")
-    df = pd.read_csv(HODDI_CSV)
+def load_and_prepare(data_csv=None):
+    data_csv = data_csv or HODDI_CSV
+    print(f"Loading HODDI (NO combo-size filter) from {data_csv}...")
+    df = pd.read_csv(data_csv, low_memory=False)
     df["DrugBankID"] = df["DrugBankID"].apply(lambda x: ast.literal_eval(x) if isinstance(x, str) else x)
     df["y"] = (df["hyperedge_label"] == 1).astype(np.int64)
     df["k"] = df["DrugBankID"].apply(len)
@@ -249,11 +254,10 @@ def permute_drug_order(drugs_pad, mask):
     B, K = drugs_pad.shape
     out = drugs_pad.clone()
     for i in range(B):
-        m = mask[i].bool()
-        vals = out[i, m]
-        if vals.numel() > 1:
-            perm = torch.randperm(vals.numel(), device=vals.device)
-            out[i, m] = vals[perm]
+        n = int(mask[i].sum().item())
+        if n > 1:
+            perm = torch.randperm(n, device=out.device)
+            out[i, :n] = out[i, :n][perm]
     return out
 
 
@@ -288,8 +292,24 @@ def eval_model(model, split_tensors, smiles_tok_t, device, batch_size=2048):
     }
 
 
-def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3, log_every_batches=50):
-    train_df, val_df, test_df, drug2idx, se2idx, smiles_tok, smiles_vocab_size = load_and_prepare()
+def train_polyformer(
+    max_epochs=200,
+    batch_size=512,
+    lr=1e-3,
+    weight_decay=1e-3,
+    log_every_batches=50,
+    data_csv=None,
+    out_model=None,
+    out_report=None,
+    tag=None,
+    patience=25,
+):
+    data_csv = data_csv or HODDI_CSV
+    out_model = out_model or OUT_MODEL
+    out_report = out_report or OUT_REPORT
+    tag = tag if tag is not None else REPORT_TAG
+
+    train_df, val_df, test_df, drug2idx, se2idx, smiles_tok, smiles_vocab_size = load_and_prepare(data_csv)
 
     train_t = pack_split(train_df, drug2idx)
     val_t = pack_split(val_df, drug2idx)
@@ -297,6 +317,7 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
+    print(f"Outputs -> model={out_model} | report={out_report}")
 
     smiles_tok_t = smiles_tok.to(device)
 
@@ -317,7 +338,6 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     best_val_auc = -1.0
-    patience = 25
     patience_ctr = 0
 
     for epoch in range(1, max_epochs + 1):
@@ -363,8 +383,10 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
                 "drug2idx": drug2idx,
                 "se2idx": se2idx,
                 "smiles_vocab_size": smiles_vocab_size,
-                "max_drugs_model": MAX_DRUGS
-            }, OUT_MODEL)
+                "max_drugs_model": MAX_DRUGS,
+                "data_csv": data_csv,
+                "tag": tag,
+            }, out_model)
         else:
             patience_ctr += 1
 
@@ -373,16 +395,18 @@ def train_polyformer(max_epochs=200, batch_size=512, lr=1e-3, weight_decay=1e-3,
             break
 
     # Test eval
-    ckpt = torch.load(OUT_MODEL, map_location=device)
+    ckpt = torch.load(out_model, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     test_metrics = eval_model(model, test_t, smiles_tok_t, device)
 
     cm = test_metrics["cm"]
+    tag_line = f"Experiment tag: {tag}\n" if tag else ""
+    data_line = f"Data CSV: {data_csv}\n"
     report = f"""
 ======================================================================
 EVALUATION REPORT: POLYFORMER (NO SIZE FILTER, LEARNABLE SE)
 ======================================================================
-Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
+{tag_line}{data_line}Model: SMILES CNN + Drug Set Self-Attention + SE Cross-Attention
 SE representation: Learnable embedding (fair vs HGNN-SA)
 Split: Strict quarter-wise chronological 70/15/15 (same as HGNN-SA)
 Combo size handling: No filtering; drug sets truncated to MAX_DRUGS={MAX_DRUGS} (deterministic)
@@ -403,12 +427,34 @@ Actual Toxic (1)   : {cm[1][0]:<18} | {cm[1][1]}
 ======================================================================
 """
     print(report)
-    with open(OUT_REPORT, "w", encoding="utf-8") as f:
+    with open(out_report, "w", encoding="utf-8") as f:
         f.write(report)
 
-    print(f"Saved -> {OUT_REPORT}")
-    print(f"Saved -> {OUT_MODEL}")
+    print(f"Saved -> {out_report}")
+    print(f"Saved -> {out_model}")
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Train PolyFormer on a HODDI-style CSV.")
+    p.add_argument("--data", default=HODDI_CSV, help="Path to dataset CSV")
+    p.add_argument("--out_model", default=OUT_MODEL, help="Checkpoint output path")
+    p.add_argument("--out_report", default=OUT_REPORT, help="Evaluation report output path")
+    p.add_argument("--tag", default="", help="Optional tag written into the report header")
+    p.add_argument("--max_epochs", type=int, default=200)
+    p.add_argument("--batch_size", type=int, default=512)
+    p.add_argument("--patience", type=int, default=25, help="Early-stop patience on val AUC")
+    return p.parse_args()
 
 
 if __name__ == "__main__":
-    train_polyformer(max_epochs=200, batch_size=512, log_every_batches=50)
+    args = parse_args()
+    train_polyformer(
+        max_epochs=args.max_epochs,
+        batch_size=args.batch_size,
+        log_every_batches=50,
+        data_csv=args.data,
+        out_model=args.out_model,
+        out_report=args.out_report,
+        tag=args.tag,
+        patience=args.patience,
+    )

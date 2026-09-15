@@ -1,0 +1,4 @@
+scheme,description,n_positives,n_negatives,n_failed_negatives,subset_skip_events,subset_contamination_among_accepted_negatives,subset_reject_rate_approx
+B,drug_corrupt,111072,111072,0,0,0.005644987035436474,0.0
+C,se_corrupt,111072,111072,0,0,0.0,0.0
+D,drug_corrupt_subset_aware,111072,111061,11,1507,0.0,0.013387463577570891

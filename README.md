@@ -171,6 +171,44 @@ From `Evaluate_PolyFormer.txt`:
 
 ---
 
+## Synthetic Negative Robustness (Review extension)
+
+Official HODDI negatives (**scheme A**: replace 1 drug **and** 1 SE) ship in `data/hoddi_merged.csv` and are the primary baseline above.
+
+We also regenerate alternate negatives from **positives only** and retrain PolyFormer (without overwriting the A checkpoint):
+
+| Scheme | Idea | Data file |
+| ------ | ---- | --------- |
+| B | Replace 1 drug; keep SE | `data/hoddi_synth_B.csv` |
+| C | Keep combo; replace SE | `data/hoddi_synth_C.csv` |
+| D | Like B + reject if combo still contains a known positive subset for that SE | `data/hoddi_synth_D.csv` |
+
+```bash
+# Generate B/C/D tables + generation stats
+python src/generate_synthetic_negatives.py
+
+# Train PolyFormer on each scheme (separate outputs)
+python src/polyformer_train.py --data data/hoddi_synth_B.csv --out_model models/polyformer_synth_B.pt --out_report results/Evaluate_PolyFormer_synth_B.txt --tag synth_B_drug_corrupt
+python src/polyformer_train.py --data data/hoddi_synth_C.csv --out_model models/polyformer_synth_C.pt --out_report results/Evaluate_PolyFormer_synth_C.txt --tag synth_C_se_corrupt
+python src/polyformer_train.py --data data/hoddi_synth_D.csv --out_model models/polyformer_synth_D.pt --out_report results/Evaluate_PolyFormer_synth_D.txt --tag synth_D_drug_corrupt_subset_aware
+
+# Build comparison table (uses existing A report + B/C/D reports)
+python src/build_synth_comparison.py
+```
+
+Walkthrough of all schemes (including the paper method): [`explanations/explanationNegativeSampling.md`](explanations/explanationNegativeSampling.md)  
+Results table: [`results/synthetic_negative_comparison.md`](results/synthetic_negative_comparison.md)
+
+**Limitation:** synthetic negatives are closed-world proxies, not proven-safe combinations. Harder schemes may lower AUC; that is expected when label difficulty increases.
+
+PolyFormer test ROC-AUC under each scheme (from `results/synthetic_negative_comparison.md`):
+
+| A (official) | B (drug-corrupt) | C (SE-corrupt) | D (subset-aware) |
+| ------------ | ---------------- | -------------- | ---------------- |
+| 0.9678 | 0.7802 | 0.8905 | 0.7923 |
+
+---
+
 ## Summary
 
 PolyFormer significantly outperformed HGNN-SA on the same chronological future test set across all evaluation metrics.  
