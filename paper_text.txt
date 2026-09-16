@@ -1,0 +1,1761 @@
+HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational
+Pharmacovigilance
+
+Zhaoying Wang 1 Yingdan Shi 1 Xiang Liu 1 Can Chen 2 Jun Wen 3 Ren Wang 1
+
+arXiv:2502.06274v1 [cs.LG] 10 Feb 2025
+
+Abstract
+
+1. Introduction
+Clinical observations have revealed numerous cases in
+which drug combinations lead to unexpected adverse effects (Tekin et al., 2017; 2018). For instance, the concurrent use of multiple antibiotics with anticoagulants can significantly increase bleeding risks (Baillargeon et al., 2012),
+while the combination of various antidepressants may elevate the likelihood of serotonin syndrome (Quinn & Stern,
+2009). These scenarios underscore the urgent need to investigate higher-order drug-drug interactions (Tekin et al.,
+2018), as understanding the intricate relationships between
+multiple drugs and their side effects is pivotal in pharmacology, forming the foundation for pharmacovigilance
+and drug safety studies (Tatonetti et al., 2012; Salas et al.,
+2022; Huang et al., 2021). By elucidating these interactions, researchers can identify potential adverse effects
+early in the drug development process (Montastruc et al.,
+2006; Kompa et al., 2022), optimize drug design (Lipinski et al., 2012), mitigate polypharmacy risks (Lukačišin
+& Bollenbach, 2019), and advance personalized medicine
+(Molina, 2017) by helping clinicians tailor treatments to
+individual patient characteristics (Ryu et al., 2018). Nevertheless, current research faces two major challenges: the
+scarcity of datasets capturing complex, high-order drugdrug interactions (Zitnik et al., 2018; Wang et al., 2017),
+and the limitations of existing computational methods in
+effectively modeling these high-order relationships (Masumshah et al., 2021; Sachdev & Gupta, 2020; Zakharov
+& Lagunin, 2014).
+
+Drug-side effect research is vital for understanding adverse reactions arising in complex
+multi-drug therapies. However, the scarcity of
+higher-order datasets that capture the combinatorial effects of multiple drugs severely limits
+progress in this field. Existing resources such
+as TWOSIDES primarily focus on pairwise interactions. To fill this critical gap, we introduce HODDI, the first Higher-Order Drug-Drug
+Interaction Dataset, constructed from U.S. Food
+and Drug Administration (FDA) Adverse Event
+Reporting System (FAERS) records spanning the
+past decade, to advance computational pharmacovigilance. HODDI contains 109,744 records
+involving 2,506 unique drugs and 4,569 unique
+side effects, specifically curated to capture multidrug interactions and their collective impact on
+adverse effects. Comprehensive statistical analyses demonstrate HODDI’s extensive coverage
+and robust analytical metrics, making it a valuable resource for studying higher-order drug relationships. Evaluating HODDI with multiple
+models, we found that simple Multi-Layer Perceptron (MLP) can outperform graph models,
+while hypergraph models demonstrate superior
+performance in capturing complex multi-drug interactions, further validating HODDI’s effectiveness. Our findings highlight the inherent value
+of higher-order information in drug-side effect
+prediction and position HODDI as a benchmark
+dataset for advancing research in pharmacovigilance, drug safety, and personalized medicine.
+The dataset and codes are available at https:
+//github.com/TIML-Group/HODDI.
+
+Several existing datasets have been developed for the
+research of drug-side effect relationships. While these
+datasets are valuable resources, they have inherent
+limitations in capturing high-order drug interactions.
+SIDER (Kuhn et al., 2010; 2016) and OFFSIDES (Kumar et al., 2024) focus primarily on single-drug effects,
+while TWOSIDES (Tatonetti et al., 2012) advances to pairwise drug combinations. Despite being augmented by biological interaction networks (e.g., HPRD (Keshava Prasad
+et al., 2009), BioGRID (Stark et al., 2006), STITCH (Kuhn
+et al., 2007)), these datasets predominantly focus on singledrug or two-drug interactions, facing significant challenges
+in polypharmacy scenarios due to insufficient coverage of
+
+1 Illinois
+
+Institute of Technology 2 The University of
+North Carolina at Chapel Hill 3 Harvard Medical School.
+Correspondence to: Can Chen <canc@unc.edu>, Jun Wen
+<Jun_Wen@hms.harvard.edu>, Ren Wang <rwang74@iit.edu>.
+Paper under review.
+
+1
+
+HODDI
+
+multi-drug combinations (Tekin et al., 2017), inconsistent
+data quality (Ismail & Akram, 2022), and the exponential
+growth of possible drug combinations relative to available
+data (Tekin et al., 2018).
+
+more sophisticated models like Graph Attention Network
+(GAT). This suggests the inherent value of higher-order
+drug interaction data; ➋ Models that explicitly incorporate hypergraph structures (e.g., HyGNN (Saifuddin et al.,
+2023)) can further enhance prediction accuracy by better
+capturing complex multi-drug relationships.
+
+Various computational methods have been developed for
+drug-side effect relationship prediction. Traditional matrix factorization approaches, such as Non-negative Matrix Factorization (NMF) (Lee & Seung, 1999) and Probabilistic Matrix Factorization (PMF) (Jain et al., 2023),
+face challenges in computational complexity due to highdimensional matrix operations (Jain et al., 2023), while traditional machine learning methods struggled with modeling complex non-linear relationships in drug-adverse effect
+interactions (Lee & Seung, 1999). Deep learning frameworks, such as the combination of Convolutional Neural Networks (CNNs) and Long Short-Term Memory networks (LSTMs), while improving spatial and temporal feature extraction capabilities, exhibit limitations in molecular structure representation (Karim et al., 2019; Peng & Ji,
+2024; Xu et al., 2018). Graph-based methods like Decagon
+and Graph Convolutional Network (GCN) demonstrated
+promise by leveraging protein interaction networks (Zitnik et al., 2018), but were primarily restricted to modeling pairwise drug interactions (Zitnik et al., 2018; Zhang
+et al., 2023). Due to the lack of specialized datasets capturing higher-order drug-adverse effect relationships, existing
+methods largely rely on datasets containing only pairwise
+drug interactions, fundamentally limiting their capability
+to model complex polypharmacy scenarios (Tekin et al.,
+2017; 2018).
+
+We summarize our contributions as follows:
+• We constructed HODDI, the first dataset focusing on
+higher-order drug-drug interactions from the FAERS
+database.
+• We comprehensively analyzed HODDI’s statistical characteristics across multiple time scales.
+• Our experiments highlight the importance of higherorder information in drug-side effect prediction and
+demonstrate the effectiveness of the proposed hypergraph model.
+
+2. Related Work
+Existing Datasets. Several specialized medical datasets
+have been developed for studying drug-side effect relationships. SIDER (Kuhn et al., 2010; 2016) contains drug-side
+effect associations extracted from drug labels and public
+documents, serving as a foundational dataset of single drug
+documentation. Building upon this, OFFSIDES (Kumar
+et al., 2024) incorporates data from clinical trials, offering more rigorous evidence. TWOSIDES (Tatonetti et al.,
+2012) further advances the data complexity by providing
+comprehensive information about drug combinations and
+their associated side effects derived from FAERS (U.S.
+Food and Drug Administration, 2024b;a), capturing realworld multi-drug interaction cases. These datasets are
+further augmented by protein-protein interaction networks
+from databases like HPRD (Keshava Prasad et al., 2009)
+and BioGRID (Stark et al., 2006), and drug-protein target
+interactions from STITCH (Kuhn et al., 2007), enabling
+researchers to construct multi-modal graphs for side effect prediction in both single-drug and combination therapy scenarios (Zitnik et al., 2018; Wang et al., 2009; Ryu
+et al., 2018; Vilar & Hripcsak, 2017). While these datasets
+have achieved some success in characterizing drug-side effect relationships, they face significant limitations in capturing higher-order interactions in polypharmacy scenarios. The challenges stem from three main aspects: ➊ Insufficient coverage of drug combinations, which limits our
+understanding of complex drug interactions; ➋ Inconsistent data quality across different sources (Ismail & Akram,
+2022), which affects the reliability of predictions; and ➌
+Data sparsity issues in polypharmacy settings, where the
+number of possible drug combinations grows exponentially
+while available data remains limited (Tekin et al., 2017;
+2018).
+
+To address this gap, we introduce the Higher-Order DrugDrug Interaction (HODDI) dataset, the first resource
+specifically designed to capture higher-order drug-drug interactions and their associated side effects. HODDI is constructed from the FAERS database (U.S. Food and Drug
+Administration, 2024b;a) and consists of 109,744 records
+spanning the past 10 years, covering 2,506 unique drugs
+and 4,569 distinct side effects. Through rigorous data
+cleaning and conditional filtering, we focused on cases of
+co-administered drugs, enabling the study of their combinational impacts on adverse effects. Comprehensive statistical analyses characterize the dataset’s key properties,
+highlighting its potential for advancing polypharmacy research.
+To assess HODDI’s utility, we created evaluation subsets
+and tested its performance using multiple models, with detailed methods described in Sections 5 and 6. Our experiments reveal two key findings about leveraging higherorder information in drug-side effect prediction: ➊ Even
+simple architectures like Multi-Layer Perceptron (MLP)
+can achieve strong performance when utilizing higherorder features from our dataset, sometimes outperforming
+
+2
+
+HODDI
+
+Existing Methods. Early research primarily relied on
+traditional machine learning methods, including Naive
+Bayes (Jansen et al., 2003; Burger & Van Nimwegen,
+2008), Support Vector Machines (SVMs) (Ferdousi et al.,
+2017), and Network Analysis (Ye et al., 2014), which were
+used to analyze chemical structures (Staszak et al., 2022),
+molecular fingerprints (Rogers & Hahn, 2010), and protein interaction networks (Chowdhary et al., 2009; Bradford et al., 2006). Subsequently, matrix factorization approaches such as NMF (Lee & Seung, 1999) and PMF (Jain
+et al., 2023) were introduced to decompose drug interaction
+matrices, though challenged by computational complexity
+and interpretability. With the rise of deep learning, CNNs
+and LSTMs were combined for the extraction of spatial features from molecular structures and the capture of temporal dependencies in drug interactions, effectively modeling
+complex drug-drug interaction relationships, particularly
+in polypharmacy scenarios (Xu et al., 2018; Karim et al.,
+2019; Wen et al., 2023; Peng & Ji, 2024). Due to the inherent advantages on leveraging the established biomedical relations, graph-based methods have been predominately investigated. For instance, the Decagon model (Zitnik et al.,
+2018) leverages graphs to leverage both the drug-drug and
+protein-protein interactions to connect drug to side effects, and Graph Attention Networks (GAT) (MOHAMED
+& Vít) were leveraged attention mechanisms to improve
+performance. Despite these advancements, challenges remain due to the scarcity of specialized datasets capturing
+higher-order drug-drug interaction relationships (Lukačišin
+& Bollenbach, 2019), particularly in polypharmacy scenarios where complex multi-drug interactions need to be modeled (Fatima et al., 2022). While researchers have achieved
+some success using benchmark datasets like DrugBank
+(Wishart et al., 2018) and TWOSIDES (Tatonetti et al.,
+2012; Zhang et al., 2023), the current model performance
+remains limited by the lack of datasets containing higherorder drug-adverse effect relationships.
+
+Key Components Extraction. After decompressing the
+downloaded zip files and parsing the XML data, we extracted key components from each record in the FAERS
+database, including the report ID, the side effect names,
+and the standardized drug names with their drug roles2 .
+Table 1: An example of the extracted components from a
+FAERS record: Three medications—Hydroxychloroquine,
+Prednisone, and Terbinafine—were administered simultaneously, all classified under Drug Role 3 (concomitant
+medications).
+Report ID
+24135951
+
+Side Effect
+
+Drug (Role)
+
+Psoriasis
+Drug interaction
+
+Hydroxychloroquine (3)
+Prednisone (3)
+Terbinafine (3)
+
+Table 1 illustrates an example of a simultaneous drug
+administration during an adverse event period. According to the clinical report (ID: 24135951), three concomitant medications (Hydroxychloroquine, Prednisone, and
+Terbinafine), classified as Drug Role 3, were administered
+concurrently during the treatment. This combination of
+drug therapy represents a complex pharmacological intervention with potentially risky drug-drug interactions.
+
+Conditional Filtering. After extraction of key components from each record in the FAERS database, the resulting records from the latest 41 quarters (2014Q4-2024Q3)
+were filtered based on the following three conditions to
+capture the potential suspect drug interactions:
+a) Condition 1: At least two concomitant drugs (Drug
+Role 3) were reported in a record, with no primary suspect drugs (Drug Role 1) or secondary suspect drugs (Drug
+Role 2);
+
+3. HODDI Dataset Construction
+
+b) Condition 2: At least one primary suspect drug (Drug
+Role 1) combined with at least one concomitant drug (Drug
+Role 3), with no secondary suspect drugs (Drug Role 2);
+
+We utilized the FAERS database (U.S. Food and Drug Administration, 2024b;a) as our primary data source, which
+contains comprehensive adverse event reports, medication
+error reports, and product quality complaints submitted to
+the U.S. Food and Drug Administration (FDA) by healthcare professionals, consumers, and manufacturers. We
+downloaded the quarterly datasets spanning from 2014Q3
+to 2024Q3, covering the latest 41 quarters in total.1 Each
+quarterly dataset is a compressed zip file containing individual raw XML files.
+
+c) Condition 3: Concurrent presence of all three drug roles
+- primary suspect drug (Drug Role 1), secondary suspect
+drug (Drug Role 2), and concomitant drug (Drug Role 3).
+These conditions enable comprehensive identification of
+potential adverse drug interactions, including cases where
+concomitant medications may contribute to adverse events.
+2 Drug roles are categorized into three types in the FAERS
+database: a) Drug Role 1: primary suspect drugs that are primarily suspected of causing the adverse event; b) Drug Role 2:
+secondary suspect drugs that may have contributed to the event;
+c) Drug Role 3: concomitant medications that were being taken
+at the same time of the event.
+
+1 Q3 denotes the third quarter of the year.
+
+3
+
+HODDI
+
+Table 2: HODDI dataset statistics, including the number
+of records (#Record), unique standardized drug names per
+record in positive/negative samples (#Drug+/-), and unique
+CUIs in positive/negative samples (#CUI+/-).
+
+Side Effects Processing. Side effect names were first
+extracted from the original FAERS records and then encoded into 768-dimensional embedding vectors using Selfaligning pretrained Bidirectional Encoder Representations
+from Transformers (SapBERT) (Liu et al., 2021), a model
+pre-trained on PubMed texts for biomedical entity normalization (Lim & Kim, 2022). The mapping between the
+standardized adverse event terminology (MedDRA terms)
+and their corresponding Unified Medical Language System
+(UMLS) Concept Unique Identifiers (CUIs) were obtained
+from the UMLS Metathesaurus (uml). The cosine similarities were calculated between all embedding pairs of the side
+effect names from the original FAERS records and the standardized MedDRA terms, with their embeddings generated
+using SapBERT. For each side effect name in the records,
+its recommended CUI was determined by identifying the
+standardized MedDRA term with the highest cosine similarity to its embedding. The cosine similarity thresholds
+of 0.8 and 0.9 were used to stratify the side effects based
+on their confidence levels, with the higher threshold value
+indicating the higher confidence of their classifications as
+recommended CUIs. The recommended CUIs served as
+the labels of side effect names, while the 768-dimensional
+embedding vectors of the corresponding standardized MedDRA terms served as the feature representations across all
+models.
+
+Time
+2014Q3-2024Q3
+
+#Record #Drug+ #Drug- #CUI+ #CUI109,744
+
+2,506
+
+12,293
+
+3,950
+
+4,581
+
+(2014Q3-2024Q3). This reduction strategy ensures each
+unique drug combination is represented only by its minimal complete set, preserving the most fundamental drug
+interactions while eliminating redundant higher-order drug
+combinations, improving computational efficiency and reducing noises in the HODDI dataset.
+Negative Sample Construction. Negative samples represent drug combinations that have not been reported to
+cause the specific adverse events in clinical records or
+are unlikely to trigger such adverse events based on their
+known pharmacological properties. In this work, negative samples were artificially constructed cases by replacing both a drug and a side effect from positive samples
+with random alternatives, based on the assumption that it
+is extremely unlikely for a randomly assembled drug combination to cause a specific side effect while ensuring the
+generated samples don’t exist among positive samples. An
+equal number of positive and negative samples were generated, which helps maintain the class balance in the HODDI
+dataset and prevents model bias during training, ensuring
+that the model would not favor predicting one class over another, and improving its generalization capability and prediction accuracy. The obtained positive and negative samples were partitioned chronologically into 41 quarterly intervals from 2014Q3 to 2024Q3, resulting in 41 pairs of
+positive and negative sample files (82 CSV files in total).
+
+Drug Names Processing. The standardized drug names
+were extracted from the FAERS records and normalized by
+converting all standardized drug names to uppercase, removing salt form suffixes (e.g., hydrochloride/HCL), and
+handling compound drug names. Then the normalized drug
+names were mapped to their corresponding DrugBank IDs
+using DrugBank’s comprehensive database (DrugBankFullDatabase.xml) (Wishart et al., 2006), which contains
+the detailed drug information including synonyms and alternative names.
+
+4. Data Analysis
+Dataset Structure. The HODDI dataset comprises two
+distinct sets of CSV files: The first set contains the merged
+positive and negative samples consolidated into two CSV
+files (pos.csv and neg.csv). The second set encompasses
+quarterly data spanning from 2014Q3 to 2024Q3, containing 82 CSV files (41 quarters × 2 files per quarter).
+For each quarter 𝑄, there are two corresponding files denoted as 𝑄_𝑝𝑜𝑠.𝑐𝑠𝑣 and 𝑄_𝑛𝑒𝑔.𝑐𝑠𝑣, where 𝑄 represents
+the quarter identifier (e.g., 2014Q3), and the suffixes 𝑝𝑜𝑠
+and 𝑛𝑒𝑔 indicate positive and negative samples, respectively. This dataset structure follows the established pharmacovigilance data processing methods (Sakaeda et al.,
+2013; Poluzzi et al., 2012). Each CSV file contains five
+essential columns that capture key information about drugside effect reports: report identifier, recommended CUI,
+DrugBank ID, hyperedge labels (1 for positive samples, -1
+for negative samples), and temporal information (year and
+
+Positive Sample Construction. In the context of
+polypharmacy, positive samples refer to drug combinations
+that have been confirmed to cause specific side effects
+in real-world medical records. For HODDI dataset construction, positive samples were constructed from records
+with high-confidence side effects with high cosine similarities above 0.9 for side effect embeddings generated
+by SapBERT. To eliminate data redundancy, we removed
+duplicate records and checked for superset relationships.
+For each record with a higher number of co-administered
+drugs, we examined whether its drug combination and associated side effects completely overlapped with those in
+records containing fewer drugs. If such complete overlap was found, we removed the superset record to maintain the most parsimonious representation of drug-side effect associations across the dataset spanning 41 quarters
+4
+
+HODDI
+
+(a) Drug counts distribution per record
+
+(b) Side effect frequency in positive samples (c) Side effect frequency in negative samples
+
+Figure 1: Distribution analysis of medication records and adverse event frequencies in the HODDI dataset (2014Q32024Q3). (a) Distribution of drug counts per record (#Drug/Record), showing a concentration between 2-8 drugs per
+record; (b) Frequency distribution of adverse event occurrences (#Occurrence) in positive samples, with most events occurring 1-50 times; (c) Distribution of adverse event occurrences (#Occurrence) in negative samples, displaying a normallike distribution centered around 20-30 occurrences. The vertical dashed lines in (a) and (b) mark the intervals of 2-8
+#Drug/Record and 5-50 #Occurrence, respectively. These intervals were selected as the filtering criteria for our evaluation
+set due to their high record counts and the most representative higher-order relationships.
+very few records (< 1%) containing more than 30 drugs
+(maximum: 100). For side effect occurrences, positive
+samples show a long-tail distribution spanning from 1 to
+5000, with the majority (63.3%) occurring 1-10 times, as
+shown in Figure 1(b). In contrast, negative samples have
+a more concentrated and near-normal distribution, with
+68.7% of side effects occurring for 21-30 times within a
+narrower range of 11-50, as shown in Figure 1(c). Stratified statistics of the medication records and the adverse
+event frequencies are detailed in Appendix A.3.
+
+quarter of each record), shown in Table 8. The HODDI
+dataset structure facilitates the analysis of higher-order relationships between drug combinations and their adverse
+effects, enabling comprehensive data mining of multi-drug
+interaction pattern.
+Dataset Composition. As shown in Table 2, the HODDI
+dataset spanning from 2014Q3 to 2024Q3 comprises
+109,744 drug-side effect association records (balanced between positive and negative samples). In the complete
+dataset, the positive samples contain 2,506 unique standardized drug names and 3,950 unique CUIs, while the
+negative samples include 12,293 unique drugs and 4,581
+unique CUIs. The increased number of unique entities in
+the negative samples is attributed to the resampling process during negative sample generation (Ismail & Akram,
+2022).
+
+Drug Interaction Trends. Monitoring the temporal
+trends in suspected drug interactions and validating adverse effect recommendations is essential for pharmacovigilance, enabling tracking of reporting patterns, identification of safety signals, and evaluation of standardization
+methodologies (Ji et al., 2016; Norén et al., 2010). To
+gain these insights, we conducted a longitudinal analysis
+of the HODDI dataset from 2014Q3 to 2024Q3, examining temporal trends in drug interaction records and the reliability of side effect ULMS CUI recommendations. Figure 2 illustrates the quarterly distribution of records across
+three drug role conditions and side effect cosine similarity ranges between the actual and recommended standardized side effect embeddings. The raw data is presented
+in Table 13. Over the 41 quarters analyzed, the HODDI
+dataset contains a total of 92,064 drug interaction records,
+with a mean of 2,246 records per quarter with a standard
+deviation of 1,412. Condition 3 was the most prevalent
+drug condition overall, accounting for 46% of total records,
+followed by Condition 2 (41%) and Condition 1 (13%).
+However, the relative proportions of the conditions shifted
+
+Drug and Adverse Event Distribution. We performed
+a distribution analysis of the medication records and the
+adverse event frequencies in the HODDI dataset (2014Q32024Q3), with results shown in Figure 1. The drug count
+per record exhibits identical distribution for positive and
+negative samples, whereas the side effect occurrences show
+distinct distributions between positive and negative samples, as contrasted in Figure 1(b) and (c). This distributional distinction arises from our negative sample generation procedure, which employs random resampling of side
+effects for negative sample generation. The drug counts
+per record in both positive and negative samples show leftskewed distributions with a typical long tail, as shown in
+Figure 1(a). Most records (82%) contain 2-10 drugs, with
+5
+
+HODDI
+
+ 7 L P H
+
+substantially in late 2021. Prior to 2021Q4, Conditions 2
+and 3 were dominant, each averaging approximately 1,500
+records per quarter. Starting in 2021Q4, Condition 1 became the most prevalent, consistently recording between
+800-1,000 cases per quarter, while Conditions 2 and 3 decreased to around 300-400 records quarterly. This marked
+shift suggests evolving patterns in drug interaction reporting over time. The cosine similarity analysis revealed generally high reliability in side effect recommendations, with
+90% of the 470,144 total CUI matches having similarities
+greater than 0.9. However, we also note that the proportion of low-confidence matches (similarity < 0.8) gradually
+increased from around 3-4% in early periods to 8-10% in
+recent quarters. This trend points to growing complexity in
+standardizing side effect terminology. Our findings highlight the typical temporal trends in the HODDI dataset,
+with notable changes in the distribution of drug role conditions and a slight decline in recommendation reliability
+over the study period. Further research is warranted to understand the factors driving these shifts and their implications for drug interaction surveillance.
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+     4  
+
+ & R Q G L W L R Q  
+ & R Q G L W L R Q  
+ & R Q G L W L R Q  
+
+(2014Q1-2024Q1). Taking 2024Q3 as an illustrative example, we observed consistent patterns in drug role distributions, as shown in Table 3. Typically, Role 1 medications show the highest presence (mean=1.70 in 2024Q3)
+and consistent usage patterns (25th-75th percentile: 1-1),
+while Role 2 exhibits moderate usage (mean=1.51), and
+Role 3 appears rarely (mean=0.02). The maximum number of drugs per record varies between quarters but consistently shows Role 2 having the highest counts, followed by
+Role 1, with Role 3 showing notably fewer drugs. While
+specific values fluctuate across quarters, the general pattern remains: most records contain few drugs (median typically around 1.0) with rare cases of extensive polypharmacy, resulting in a consistent left-skewed distribution pattern (Tekin et al., 2018).
+Table 3: An example of quarterly statistics of drug count
+per record in 2024Q3 HODDI dataset, showing the number
+of co-administered drug count per record, where Role 1/2/3
+indicate different drug roles, and Total represents the sum
+of drugs across all drug roles (1, 2, and 3) within a single
+record. This table illustrates the distribution of drugs across
+different roles and the total drug count within each record.
+
+     
+         
+ !    
+
+Metric
+Maximum
+Minimum
+Mean
+Median
+25th Percentile
+75th Percentile
+
+Role 1 Role 2 Role 3 Total
+187
+0
+1.70
+1
+1
+1
+
+200
+0
+1.51
+0
+0
+1
+
+77
+0
+0.02
+0
+0
+0
+
+203
+1
+3.23
+1
+1
+3
+
+5. Evaluation Subsets Generation
+To facilitate efficient model evaluation, we constructed
+three evaluation subsets from the HODDI dataset using the
+following criteria (excluding low-frequency cases), with
+their statistical details summarized in Table 5:
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+   5 H F R U G   î   3  
+
+ 
+
+  
+
+  
+
+• Evaluation Subset 1: 21,503 sample pairs where each
+record contains 2-8 drugs, and each side effect appears
+for 5-50 times;
+
+  
+
+Figure 2: Temporal trends of the record number of drug
+conditions (1-3) and cosine similarity ranges (< 0.8, 0.80.9, > 0.9) in the HODDI dataset from 2014Q3 to 2024Q3.
+The horizontal axis shows the number of records (× 10³),
+with drug conditions displayed on the left and cosine similarity ranges on the right. The vertical axis represents the
+quarterly time periods of medication records ranging from
+2014Q3 to 2024Q3. The stacked bars demonstrate the distribution of records across different categories over quarterly periods.
+
+• Evaluation Subset 2: 24,777 sample pairs where each
+record contains 2-16 drugs, and each side effect appears
+for 5-50 times;
+• Evaluation Subset 3: 38,430 sample pairs where each
+record contains 2-16 drugs, and each side effect appears
+for 5-100 times.
+For simplicity, we selected Evaluation Subset 1 as our
+evaluation set for HODDI dataset utility evaluation across
+graph- and non-graph-based models. One example record
+
+Drug Distribution Variability Across Quarters. We
+analyzed the drug distribution patterns across 41 quarters
+6
+
+HODDI
+
+Table 5: HODDI dataset statistics across three evaluation
+subsets, showing the number of records (#Records), unique
+standardized drug names per record in positive/negative
+samples (#Drugs+/-), and unique CUIs in positive/negative
+samples (#CUIs+/-)
+
+from the evaluation set is illustrated in Table 4. This table presents a detailed example of a single record from the
+evaluation set, demonstrating the structured format used for
+capturing adverse drug event information, including unique
+identifiers for reports and drugs, temporal information, and
+the binary classification label for potential drug interactions.
+
+Time
+
+Table 4: An example record from evaluation set, showing key attributes including the report identifier (report_id),
+the high-confidence UMLS CUI with its cosine similarity above 0.9 (SE_above_0.9), the standardized DrugBank identifiers (DrugBankID), the hyperedge label (hyperedge_label), and the temporal information (time).
+Attribute report_id SE > 0.9
+Value
+
+DrugBankID hyperedge_label
+
+DB00582
+10367822 C0438167
+DB08901
+
+1
+
+#Records #Drugs+ #Drugs- #CUIs+ #CUIs-
+
+Evaluation Subset 1
+Evaluation Subset 2
+Evaluation Subset 3
+
+21,503
+24,777
+38,430
+
+1,779
+2,050
+2,156
+
+10,460
+10,917
+11,835
+
+1,420
+1,580
+1,778
+
+4,540
+4,566
+4,579
+
+Table 6: An example record from the converted evaluation
+set, showing key attributes including the report identifier
+(report_id), the connected drugs in graph (source and target), edge label (edge_label), and the temporal information
+(time).
+
+time
+2014Q3
+
+Evaluation Set Conversion. To evaluate the HODDI
+dataset’s applicability to GNN-based models, we implemented the clique expansion method for the evaluation set
+conversion, due to its superior ability to capture the drug
+interaction patterns, despite higher computational demands
+(Klamt et al., 2009; Zhou et al., 2006). During evaluation set conversion, each hyperedge was converted into a
+complete subgraph where every pair of nodes within the
+hyperedge is connected by an edge, inheriting the hyperedge’s properties (report ID, side effect names with recommended ULMS CUIs, and the record time). An example record from the converted evaluation set is illustrated in Table 6. This example record illustrates the conversion outcome where two drugs (identified as DB00582
+and DB08901) form a binary interaction edge, documented
+in 2014Q3 with a report ID of 10367822. This record exemplifies the preservation of essential hyperedge attributes
+during their transformation into pairwise drug connections.
+A comparative analysis of Tables 4 and 6 demonstrates the
+transformation process from the original evaluation set to
+its converted form, revealing that the evaluation set conversion reduces data complexity while sacrificing higher-order
+drug interaction information.
+
+Attribute
+
+report_id
+
+source
+
+target
+
+edge_label
+
+time
+
+Value
+
+10367822
+
+DB00582
+
+DB08901
+
+1
+
+2014Q3
+
+portant baseline for comparison, typical of its simple
+structure capable of processing flattened input features
+and easy implementation.
+2. Traditional Graph Neural Networks (GCN, GAT).
+While limited to pairwise relationships, these models
+provide effective baseline performance for capturing
+drug-drug interactions. GCN leverages spectral graph
+convolutions to aggregate neighborhood information
+(Kipf & Welling, 2016), while GAT employs attention
+mechanisms to weigh the importance of different node
+connections (Veličković et al., 2017).
+3. Hypergraph Architectures. The hypergraph architectures excel at capturing higher-order relationships
+in drug and side effect interactions through the hypergraph structure (Chen & Liu, 2024). In this work,
+we first leverage the HyGNN model, which is a
+deep learning framework designed to model complex, high-order relationships in data (Saifuddin et al.,
+2023). In addition, we introduce the Hypergraph
+Neural Network with SMILES Embedding Features
+and Attention Mechanism (HGNN-SA), a novel architecture specifically crafted to capture high-order
+relationships in chemical data efficiently. By combining hypergraph convolution, multi-head attention
+mechanisms, and molecular embeddings derived from
+SMILES representations, our approach significantly
+enhances feature representation and boosts predictive
+accuracy.
+
+6. Benchmark Methods
+To validate the applicability and generalizability of the
+HODDI dataset, we tested the evaluation set (comprising
+21,503 positive and negative samples each) across different representative data-driven deep-learning architectures.
+Three types of models were employed for this validation:
+
+This diverse model selection enables a comprehensive evaluation of how different architectures handle the complex,
+higher-order relationships present in drug-drug interactions
+in the HODDI dataset.
+
+1. Multi-Layer Perceptron (MLP). As a fundamental
+neural network architecture, MLP serves as an im7
+
+HODDI
+
+Feature Construction. For the features of drugs, we encoded the SMILES strings of drugs into 768-dimensional
+embedding vectors using a pretrained SMILES2Vec model
+(Goh et al., 2017). Drugs with missing SMILES were excluded from our analysis to ensure data quality and consistency in molecular representation. For the features of side
+effects, we utilized the SapBERT pretrained model (Lim &
+Kim, 2022) to encode side effect descriptions into vectors
+of the same dimensionality.
+
+ware specifications, are provided in Appendix A.4. The
+comparative results of the model performance are illustrated in Table 7. Multiple evaluation metrics were employed to assess our model performance, including Precision, F1 score, Area Under the Receiver Operating Characteristic curve (AUC), and Area Under the Precision-Recall
+curve (PRAUC).
+Compared with GCN and GAT, MLP achieves higher overall performance across all metrics, with a precision of
+80.5%, an F1 score of 81.9%, an AUC of 89.7%, and a
+PRAUC of 87.2%. This suggests that even a simple feedforward architecture can effectively leverage the higherorder feature representations provided by HODDI, highlighting the dataset’s well-structured and informative nature. Among the GNN models, GAT and GCN demonstrate
+comparable performance. While GAT achieves a higher
+F1 score (80.9% vs. 77.8%) and AUC (85.1% vs. 82.9%)
+compared to GCN, the latter performs better in terms of F1
+score and PRAUC. That means that HODDI is well-suited
+for both the MLP model and GNN models.
+
+Data Structures for Benchmarks. For multi-layer perceptron model, the average drug feature is concatenated
+with the feature vector of the corresponding side effect of
+each record. Each concatenated vector with 1536 dimensions forms the input data for the MLP model. For traditional graph neural networks, we constructed heterogeneous graphs consisting of two types of edges: drug-drug
+interaction edges between drug nodes, and drug-side effect
+causal relationship edges connecting drug nodes to side effect nodes. For hypergraph neural networks, instead of
+building pairwise edges, we constructed hyperedges where
+each hyperedge connects multiple drug nodes that are associated with the same side effect, effectively capturing the
+drug co-occurrence relationships. Each hyperedge is labeled with its corresponding side effect, maintaining the
+semantic connection between drug combinations and their
+side effect.
+
+By leveraging hypergraph architectures, HyGNN and
+HGNN-SA, which effectively capture higher-order relationships in drug-side effect interactions, the results can
+be significantly improved. The HGNN-SA outperforms
+all other approaches, achieving a precision of 90.6%, an
+F1 score of 93.3%, an AUC of 95.7%, and a PRAUC of
+93.9%. These results demonstrate that HGNN-based models which explicitly integrate hypergraph structures can effectively leverage the higher-order drug-drug interaction
+relationships captured in our HODDI dataset.
+
+7. Results and Analysis
+Table 7: Model performance metrics on the evaluation set
+from the HODDI dataset. Values in parentheses denote the
+standard deviations. Bold represents the best value in each
+column. Even basic architectures such as MLP can deliver robust performance when leveraging higher-order features from our dataset, surpassing more complex models
+like GAT. The hypergraph architectures, such as HyGNN
+(Saifuddin et al., 2023) and the HGNN-SA we designed,
+take this a step further by enhancing prediction accuracy
+through its ability to better model intricate multi-drug relationships.
+Model
+
+Precision
+
+F1
+
+AUC
+
+PRAUC
+
+HGNN-SA
+HyGNN
+GCN
+GAT
+MLP
+
+0.906 (0.002)
+0.903 (0.004)
+0.745 (0.016)
+0.743 (0.033)
+0.805 (0.013)
+
+0.933 (0.001)
+0.932 (0.002)
+0.778 (0.011)
+0.809 (0.013)
+0.819 (0.010)
+
+0.957 (0.003)
+0.954 (0.002)
+0.829 (0.009)
+0.851 (0.029)
+0.897 (0.005)
+
+0.939 (0.008)
+0.935 (0.005)
+0.805 (0.008)
+0.789 (0.046)
+0.872 (0.007)
+
+Additionally, the low standard deviations across all models (ranging from 0.1% to 4.6%) indicate robust and stable
+learning behavior, further validating the dataset’s reliability
+for capturing the interaction between drugs and side effects.
+The strong performance of both GNN models and the MLP
+model suggests that HODDI provides rich and high-quality
+feature representations, making it a valuable resource for
+advancing machine learning approaches in drug-drug interaction studies.
+
+8. Conclusions
+In this paper, we introduced HODDI, the first comprehensive dataset capturing higher-order drug-drug interactions.
+Our HODDI dataset comprises 109,744 records with 2,506
+unique drugs and 4,569 unique side effects. Through extensive evaluation, we demonstrated that higher-order features significantly enhance prediction performance, with
+hypergraph-based model outperforming traditional approaches by effectively capturing multi-drug relationships.
+These findings underscore the importance of higher-order
+data in advancing pharmacovigilance, drug safety, and per-
+
+We conducted a comprehensive evaluation on our evaluation set across different architectural paradigms. We randomly selected 29, 6, and 6 quarters as the training, validation, and test data, respectively, with an approximate ratio
+of 70:15:15. Detailed experimental configurations, including hyperparameter settings, training protocols, and hard8
+
+HODDI
+
+sonalized medicine. Future research opportunities based
+on HODDI include the development of advanced heterogeneous hypergraph neural networks that leverage attention mechanisms and novel message-passing schemes, the
+construction of dynamic hypergraph datasets with temporal information, and the integration of large language models with multimodal data. Our work reveals that HODDI
+establishes a robust foundation for investigating polypharmacy adverse effects, contributing to safer and more effective pharmacological interventions.
+
+tions and polypharmacy. FRONTIERS IN CHEMICAL
+SCIENCES, 3(2):1–9, 2022.
+Ferdousi, R., Safdari, R., and Omidi, Y. Computational
+prediction of drug-drug interactions based on drugs
+functional similarities. Journal of biomedical informatics, 70:54–64, 2017.
+Goh, G. B., Hodas, N. O., Siegel, C., and Vishnu, A.
+Smiles2vec: An interpretable general-purpose deep neural network for predicting chemical properties. arXiv
+preprint arXiv:1712.02034, 2017.
+
+Impact Statement
+Huang, K., Xiao, C., Glass, L. M., and Sun, J. Moltrans:
+molecular interaction transformer for drug–target interaction prediction. Bioinformatics, 37(6):830–836, 2021.
+
+This paper introduces a benchmark dataset for higher-order
+drug-drug interactions, addressing a critical need in healthcare and pharmaceutical research. The dataset enables systematic study of complex drug interactions and their side
+effects, potentially improving drug safety assessment and
+patient care. This data resource supports application-driven
+machine learning research in pharmacology while facilitating development of advanced models for predicting adverse
+drug reactions.
+
+Ismail, M. and Akram, M. U. Fda adverse event reporting
+system (faers) database: A comprehensive analysis of its
+structure, functionality, and limitations. Sage Science
+Review of Applied Machine Learning, 5(2):15–29, 2022.
+Jain, S., Chouzenoux, E., Kumar, K., and Majumdar,
+A. Graph regularized probabilistic matrix factorization
+for drug-drug interactions prediction. IEEE Journal of
+Biomedical and Health Informatics, 27(5):2565–2574,
+2023.
+
+References
+Umls metathesaurus. https://www.nlm.nih.gov/
+research/umls/index.html. Accessed: 202402-02.
+
+Jansen, R., Yu, H., Greenbaum, D., Kluger, Y., Krogan,
+N. J., Chung, S., Emili, A., Snyder, M., Greenblatt, J. F.,
+and Gerstein, M. A bayesian networks approach for predicting protein-protein interactions from genomic data.
+science, 302(5644):449–453, 2003.
+
+Baillargeon, J., Holmes, H. M., Lin, Y.-L., Raji, M. A.,
+Sharma, G., and Kuo, Y.-F. Concurrent use of warfarin and antibiotics and the risk of bleeding in older
+adults. The American journal of medicine, 125(2):183–
+189, 2012.
+
+Ji, Y., Ying, H., Tran, J., Dews, P., Lau, S.-Y., and Massanari, R. M. A functional temporal association mining
+approach for screening potential drug–drug interactions
+from electronic patient databases. Informatics for Health
+and Social Care, 41(4):387–404, 2016.
+
+Bradford, J. R., Needham, C. J., Bulpitt, A. J., and Westhead, D. R. Insights into protein–protein interfaces using a bayesian network prediction method. Journal of
+molecular biology, 362(2):365–386, 2006.
+
+Karim, M. R., Cochez, M., Jares, J. B., Uddin, M.,
+Beyan, O., and Decker, S. Drug-drug interaction prediction based on knowledge graph embeddings and
+convolutional-lstm network. In Proceedings of the 10th
+ACM international conference on bioinformatics, computational biology and health informatics, pp. 113–123,
+2019.
+
+Burger, L. and Van Nimwegen, E. Accurate prediction of
+protein–protein interactions from sequence alignments
+using a bayesian method. Molecular systems biology,
+4(1):165, 2008.
+Chen, C. and Liu, Y.-Y. A survey on hyperlink prediction. IEEE Transactions on Neural Networks and Learning Systems, 35(11):15034–15050, 2024. doi: 10.1109/
+TNNLS.2023.3286280.
+
+Keshava Prasad, T., Goel, R., Kandasamy, K., Keerthikumar, S., Kumar, S., Mathivanan, S., Telikicherla, D.,
+Raju, R., Shafreen, B., Venugopal, A., et al. Human
+protein reference database—2009 update. Nucleic acids
+research, 37(suppl_1):D767–D772, 2009.
+
+Chowdhary, R., Zhang, J., and Liu, J. S. Bayesian inference
+of protein–protein interactions from biological literature.
+Bioinformatics, 25(12):1536–1542, 2009.
+
+Kipf, T. N. and Welling, M. Semi-supervised classification with graph convolutional networks. arXiv preprint
+arXiv:1609.02907, 2016.
+
+Fatima, D., Waseem, F., Iqbal, N., Riaz, T., Bashir, I., and
+Mehboob, T. A comprehensive review: Drug interac9
+
+HODDI
+
+Klamt, S., Haus, U.-U., and Theis, F. Hypergraphs and
+cellular networks. PLoS computational biology, 5(5):
+e1000385, 2009.
+
+Masumshah, R., Aghdam, R., and Eslahchi, C. A neural network-based method for polypharmacy side effects
+prediction. BMC bioinformatics, 22:1–17, 2021.
+
+Kompa, B., Hakim, J. B., Palepu, A., Kompa, K. G., Smith,
+M., Bain, P. A., Woloszynek, S., Painter, J. L., Bate, A.,
+and Beam, A. L. Artificial intelligence based on machine
+learning in pharmacovigilance: a scoping review. Drug
+Safety, 45(5):477–491, 2022.
+
+MOHAMED, S. K. and Vít, N. Trivec: Knowledge graph
+embeddings for accurate and efficient link prediction in
+real world application scenarios.
+Molina, V. B. Personalized drug adverse side effect prediction. PhD thesis, Université Paris sciences et lettres,
+2017.
+
+Kuhn, M., von Mering, C., Campillos, M., Jensen, L. J.,
+and Bork, P. Stitch: interaction networks of chemicals and proteins. Nucleic acids research, 36(suppl_1):
+D684–D688, 2007.
+
+Montastruc, J.-L., Sommet, A., Lacroix, I., Olivier, P., Durrieu, G., Damase-Michel, C., Lapeyre-Mestre, M., and
+Bagheri, H. Pharmacovigilance for evaluating adverse
+drug reactions: value, organization, and methods. Joint
+Bone Spine, 73(6):629–632, 2006.
+
+Kuhn, M., Campillos, M., Letunic, I., Jensen, L. J., and
+Bork, P. A side effect resource to capture phenotypic
+effects of drugs. Molecular systems biology, 6(1):343,
+2010.
+
+Norén, G. N., Hopstadius, J., Bate, A., Star, K., and Edwards, I. R. Temporal pattern discovery in longitudinal
+electronic patient records. Data Mining and Knowledge
+Discovery, 20:361–387, 2010.
+
+Kuhn, M., Letunic, I., Jensen, L. J., and Bork, P. The
+sider database of drugs and side effects. Nucleic acids
+research, 44(D1):D1075–D1079, 2016.
+
+Peng, G. and Ji, X. Effective knowledge graph embeddings
+based on cnn-lstm for drug-drug interactions prediction.
+In Proceedings of the 2024 2nd International Conference
+on Frontiers of Intelligent Manufacturing and Automation, pp. 417–422, 2024.
+
+Kumar, K. D., Kumar, C. P., and Mahesh, B. Predicting
+adverse drug reactions with machine learning. In 2024
+International Conference on Computational Intelligence
+for Green and Sustainable Technologies (ICCIGST), pp.
+1–6. IEEE, 2024.
+
+Poluzzi, E., Raschi, E., Piccinni, C., and De Ponti, F. Data
+mining techniques in pharmacovigilance: analysis of the
+publicly accessible fda adverse event reporting system
+(aers). In Data mining applications in engineering and
+medicine. IntechOpen, 2012.
+
+Lee, D. D. and Seung, H. S. Learning the parts of objects
+by non-negative matrix factorization. nature, 401(6755):
+788–791, 1999.
+Lim, S. and Kim, J. Sapbert: speaker-aware pretrained bert
+for emotion recognition in conversation. Algorithms, 16
+(1):8, 2022.
+
+Quinn, D. K. and Stern, T. A. Linezolid and serotonin syndrome. Primary care companion to the Journal of clinical psychiatry, 11(6):353, 2009.
+
+Lipinski, C. A., Lombardo, F., Dominy, B. W., and Feeney,
+P. J. Experimental and computational approaches to estimate solubility and permeability in drug discovery and
+development settings. Advanced drug delivery reviews,
+64:4–17, 2012.
+
+Rogers, D. and Hahn, M. Extended-connectivity fingerprints. Journal of chemical information and modeling,
+50(5):742–754, 2010.
+Ryu, J. Y., Kim, H. U., and Lee, S. Y. Deep learning improves prediction of drug–drug and drug–food interactions. Proceedings of the national academy of sciences,
+115(18):E4304–E4311, 2018.
+
+Liu, F., Shareghi, E., Meng, Z., Basaldella, M., and Collier, N. Self-alignment pretraining for biomedical entity representations. In Proceedings of the 2021 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language
+Technologies, pp. 4228–4238, Online, June 2021. Association for Computational Linguistics. URL https:
+//www.aclweb.org/anthology/2021.naac
+l-main.334.
+
+Sachdev, K. and Gupta, M. K. A comprehensive review
+of computational techniques for the prediction of drug
+side effects. Drug Development Research, 81(6):650–
+670, 2020.
+Saifuddin, K. M., Bumgardner, B., Tanvir, F., and Akbas, E. Hygnn: Drug-drug interaction prediction via
+hypergraph neural network. In 2023 IEEE 39th International Conference on Data Engineering (ICDE), pp.
+1503–1516. IEEE, 2023.
+
+Lukačišin, M. and Bollenbach, T. Emergent gene expression responses to drug combinations predict higher-order
+drug interactions. Cell Systems, 9(5):423–433, 2019.
+10
+
+HODDI
+
+Sakaeda, T., Tamon, A., Kadoyama, K., and Okuno, Y.
+Data mining of the public version of the fda adverse
+event reporting system. International journal of medical sciences, 10(7):796, 2013.
+
+Wang, Y., Xiao, J., Suzek, T. O., Zhang, J., Wang, J., and
+Bryant, S. H. Pubchem: a public information system for
+analyzing bioactivities of small molecules. Nucleic acids
+research, 37(suppl_2):W623–W633, 2009.
+
+Salas, M., Petracek, J., Yalamanchili, P., Aimer, O.,
+Kasthuril, D., Dhingra, S., Junaid, T., and Bostic, T.
+The use of artificial intelligence in pharmacovigilance:
+a systematic review of the literature. Pharmaceutical
+medicine, 36(5):295–306, 2022.
+
+Wang, Y., Bryant, S. H., Cheng, T., Wang, J., Gindulyte, A.,
+Shoemaker, B. A., Thiessen, P. A., He, S., and Zhang, J.
+Pubchem bioassay: 2017 update. Nucleic acids research,
+45(D1):D955–D963, 2017.
+Wen, J., Zhang, X., Rush, E., Panickan, V. A., Li, X., Cai,
+T., Zhou, D., Ho, Y.-L., Costa, L., Begoli, E., et al. Multimodal representation learning for predicting molecule–
+disease relations. Bioinformatics, 39(2):btad085, 2023.
+
+Stark, C., Breitkreutz, B.-J., Reguly, T., Boucher, L., Breitkreutz, A., and Tyers, M. Biogrid: a general repository for interaction datasets. Nucleic acids research, 34
+(suppl_1):D535–D539, 2006.
+
+Wishart, D. S., Knox, C., Guo, A. C., Shrivastava, S.,
+Hassanali, M., Stothard, P., Chang, Z., and Woolsey, J.
+Drugbank: a comprehensive resource for in silico drug
+discovery and exploration. Nucleic acids research, 34
+(suppl_1):D668–D672, 2006.
+
+Staszak, M., Staszak, K., Wieszczycka, K., Bajek, A.,
+Roszkowski, K., and Tylkowski, B. Machine learning in
+drug design: Use of artificial intelligence to explore the
+chemical structure–biological activity relationship. Wiley Interdisciplinary Reviews: Computational Molecular
+Science, 12(2):e1568, 2022.
+
+Wishart, D. S., Feunang, Y. D., Guo, A. C., Lo, E. J.,
+Marcu, A., Grant, J. R., Sajed, T., Johnson, D., Li, C.,
+Sayeeda, Z., et al. Drugbank 5.0: a major update to the
+drugbank database for 2018. Nucleic acids research, 46
+(D1):D1074–D1082, 2018.
+
+Tatonetti, N. P., Ye, P. P., Daneshjou, R., and Altman,
+R. B. Data-driven prediction of drug effects and interactions. Science translational medicine, 4(125):125ra31–
+125ra31, 2012.
+
+Xu, B., Shi, X., Zhao, Z., and Zheng, W. Leveraging
+biomedical resources in bi-lstm for drug-drug interaction
+extraction. IEEE Access, 6:33432–33439, 2018.
+
+Tekin, E., Savage, V. M., and Yeh, P. J. Measuring higherorder drug interactions: A review of recent approaches.
+Current Opinion in Systems Biology, 4:16–23, 2017.
+
+Ye, H., Liu, Q., and Wei, J. Construction of drug network
+based on side effects and its application for drug repositioning. PloS one, 9(2):e87864, 2014.
+
+Tekin, E., White, C., Kang, T. M., Singh, N., Cruz-Loya,
+M., Damoiseaux, R., Savage, V. M., and Yeh, P. J. Prevalence and patterns of higher-order drug interactions in
+escherichia coli. NPJ systems biology and applications,
+4(1):31, 2018.
+
+Zakharov, A. and Lagunin, A. Computational toxicology
+in drug discovery: Opportunities and limitations. Application of Computational Techniques in Pharmacy and
+Medicine, pp. 325–367, 2014.
+
+U.S. Food and Drug Administration. Faers quarterly data
+files technical documentation. Technical documentation,
+U.S. Food and Drug Administration, 2024a. URL http
+s://fda.gov/drugs/surveillance/fda-a
+dverse-event-reporting-system-faers.
+
+Zhang, Y., Yao, Q., Yue, L., Wu, X., Zhang, Z., Lin, Z., and
+Zheng, Y. Emerging drug interaction prediction enabled
+by a flow-based graph neural network with biomedical
+network. Nature Computational Science, 3(12):1023–
+1033, 2023.
+
+U.S. Food and Drug Administration. Fda adverse event
+reporting system (faers). https://fda.gov/drug
+s/surveillance/questions-and-answers
+-fdas-adverse-event-reporting-syste
+m-faers, 2024b. Accessed: 2024-01-30.
+
+Zhou, D., Huang, J., and Schölkopf, B. Learning with
+hypergraphs: Clustering, classification, and embedding.
+Advances in neural information processing systems, 19,
+2006.
+
+Veličković, P., Cucurull, G., Casanova, A., Romero, A.,
+Lio, P., and Bengio, Y. Graph attention networks. arXiv
+preprint arXiv:1710.10903, 2017.
+
+Zitnik, M., Agrawal, M., and Leskovec, J. Modeling
+polypharmacy side effects with graph convolutional networks. Bioinformatics, 34(13):i457–i466, 2018.
+
+Vilar, S. and Hripcsak, G. The role of drug profiles as similarity metrics: applications to repurposing, adverse effects detection and drug–drug interactions. Briefings in
+Bioinformatics, 18(4):670–681, 2017.
+11
+
+HODDI
+
+A. Appendix
+A.1. HODDI Dataset Construction: Processing Details
+• Data Collection and Preprocessing
+– Download and extract XML files from FAERS quarterly datasets (2014Q3-2024Q3)
+– Extract key components from FAERS records: report ID, drug information (standardized drug name and drug
+role), and side effect
+– Filter records based on Drug Role counts:
+* Condition 1: Count (Drug Role 3) ≥ 2, Count (Drug Role1) = 0, Count (Drug Role 2) = 0
+* Condition 2: Count (Drug Role 1) ≥ 1, Count (Drug Role 3) ≥ 1, Count (Drug Role 2) = 0
+* Condition 3: Count (Drug Role 1) ≥ 1, Count (Drug Role 2) ≥ 1, Count (Drug Role 3) ≥ 1
+• Standardized Drug Names Processing
+– Normalization of Standardized drug names:
+* Convert to uppercase
+* Remove salt form suffixes
+* Handle compound names
+– Map normalized drug names to DrugBank IDs
+• Side Effects Processing
+– Generate 768-dimensional embeddings for FAERS side effects and MedDRA terms using SapBERT
+– Calculate cosine similarities between SapBERT-based embeddings of FAERS side effects and MedDRA terms
+– Map FAERS side effects to recommended MedDRA terms by highest similarity
+– Query recommended UMLS CUIs from UMLS Metathesaurus using MedDRA terms
+– Stratify recommended UMLS CUIs by the cosine similarity threshold (e.g., 0.9)
+• Dataset Construction
+– Generate positive samples:
+* Select records based on the predefined cosine similarity threshold
+* Remove duplicate records and drug combination supersets
+– Generate negative samples:
+* For each positive sample:
+· Randomly replace one drug and one side effect from their respective complement sets
+· Verify that the generated negative sample is absent in all positive samples
+– Create evaluation subsets for benchmark model evaluation:
+* Evaluation Subset 1: A set of records where each record contains 2-8 drugs and their associated side effects
+occur with a frequency of 5-50 times across all records
+* Evaluation Subset 2: A set of records where each record contains 2-16 drugs and their associated side effects
+occur with a frequency of 5-50 times across all records
+* Evaluation Subset 3: A set of records where each record contains 2-16 drugs and their associated side effects
+occur with a frequency of 5-100 times across all records
+
+12
+
+HODDI
+
+A.2. HODDI Dataset Structure
+Table 8 outlines the evaluation dataset structure, which intrinsically captures the higher-order drug-drug interactions relationships. Each record contains a FAERS report identifier, a recommended UMLS CUI code for adverse effect (with cosine
+similarity ≥ 0.9), and a list of DrugBank identifiers representing co-administered drugs. The hyperedge label (-1/1) indicates whether the drug combination leads to the specified side effect. Additional metadata includes the record’s temporal
+information and the number of drugs involved in each record.
+Table 9 outlines the converted evaluation dataset structure, which examines the pairwise drug interactions. Each record
+consists of a FAERS report identifier, a source and target drug pair represented by their DrugBank IDs, and a recommended
+UMLS CUI representing the observed side effect caused by the drug pair. The edge label (-1/1) denotes whether this drug
+pair causes the specified adverse effect.
+Table 8: Data structure of the evaluation set from HODDI dataset.
+Variable
+
+Column Name
+
+Description
+
+Report ID
+Recommend UMLS CUI
+DrugBank ID
+Hyperedge Label
+Record Time
+Drug Count
+Row Index
+
+report_id
+SE_above_0.9
+DrugBankID
+hyperedge_label
+time
+DrugBankID_list_length
+row_index
+
+FAERS report identifier (negative samples end with "n")
+High-confidence UMLS CUIs identified using a cosine similarity threshold of 0.9
+List of standardized DrugBank identifiers
+Binary label for hyperedge existence (1: positive samples; -1: negative samples)
+Year and quarter of the record (e.g., 2014Q3)
+Number of co-administered drugs
+Row index in merged dataset (2014Q3-2024Q3)
+
+Table 9: Data structure of the converted evaluation set from HODDI dataset.
+Variable
+Report ID
+Source Drug
+Target Drug
+Side Effect CUI
+Edge Label
+
+Column Name
+report_id
+source
+target
+SE_label
+edge_label
+
+Description
+FAERS report identifier (negative samples end with "n")
+Drug node in undirected graph
+Drug node in undirected graph
+High-confidence UMLS CUIs identified using a cosine similarity threshold of 0.9
+Binary label for edge existence (1: positive samples; -1: negative samples)
+
+13
+
+HODDI
+
+A.3. HODDI Dataset Statistics
+In the HODDI dataset spanning from 2014Q3 to 2024Q3, we analyzed the distribution patterns of drug combination
+sizes and occurrence frequency of side effects. As shown in Table 10, 80.48% of records contain between 2-10 drugs,
+with 54,304 (48.89%) records containing 2-5 drugs and 35,087 (31.59%) records containing 6-10 drugs. The frequency
+decreases significantly for records with higher drug counts, with only 1,234 records (1.11% of the total) containing no less
+than 30 drugs.
+Table 11 presents the distribution of side effect occurrences in positive samples from 2014Q3 to 2024Q3. The data shows
+a highly left-skewed and long-tailed distribution where 2,501 side effects (63.32%) appear only 1-10 times, while only 3
+side effects occur more than 1,000 times. The majority of side effects (82.63%) occur less than 30 times, indicating that
+most side effects are relatively uncommon in the HODDI dataset.
+Table 12 presents the distribution of side effect occurrences in negative samples from 2014Q3 to 2024Q3. After resampling,
+the data exhibits a near-Gaussian distribution with a slight left skew, where 3,146 side effects (68.69%) occur 21-30 times.
+The distribution is more concentrated compared to positive samples, with no occurrences below 10 times and few (15 cases,
+0.33%) above 40 times.
+Table 10: Distribution of drug count per record in positive and negative samples (2014Q3-2024Q3). (#Drug/Record: drug
+count per record; #Record: number of records.)
+#Drug/Record
+
+#Record
+
+1
+2-5
+6-10
+11-15
+16-20
+21-30
+31-40
+41-50
+51-100
+101+
+
+474
+54,304
+35,087
+12,730
+4,661
+2,582
+798
+176
+260
+0
+
+Table 11: Distribution of side effect occurrences in positive samples (2014Q3-2024Q3). (#Occurrence: number of side
+effect occurrences in positive samples; #Side Effect: number of side effects in positive samples.)
+#Occurrence
+
+#Side Effect
+
+1-10
+11-20
+21-30
+31-40
+41-50
+51-100
+101-200
+201-500
+501-1000
+1001-5000
+
+2,501
+535
+228
+126
+91
+221
+137
+85
+23
+3
+
+Table 12: Distribution of side effect occurrences in negative samples (2014Q3-2024Q3). (#Occurrence: number of side
+effect occurrences in negative samples; #Side Effect: number of side effects in negative samples.)
+#Occurrence
+
+#Side Effect
+
+1-10
+11-20
+21-30
+31-40
+41-50
+
+0
+773
+3,146
+646
+15
+
+14
+
+HODDI
+
+Table 13: Quarterly distribution of drug conditions and cosine similarity ranges in HODDI dataset (2014Q3-2024Q3).
+Black numbers show record counts for each drug condition and cosine similarity range, while blue numbers in parentheses
+indicate their proportions of total records. Total, Mean, and Std Dev rows present aggregate statistics for each column.
+Drug Condition
+
+Cosine similarity
+
+Time
+
+1
+
+2
+
+3
+
+Total
+
+< 0.8
+
+0.8 - 0.9
+
+> 0.9
+
+Total
+
+2014Q3
+2014Q4
+2015Q1
+2015Q2
+2015Q3
+2015Q4
+2016Q1
+2016Q2
+2016Q3
+2016Q4
+2017Q1
+2017Q2
+2017Q3
+2018Q1
+2018Q2
+2018Q3
+2018Q4
+2019Q1
+2019Q2
+2019Q3
+2019Q4
+2020Q1
+2020Q2
+2020Q3
+2020Q4
+2021Q1
+2021Q2
+2021Q3
+2021Q4
+2022Q1
+2022Q2
+2022Q3
+2022Q4
+2023Q1
+2023Q2
+2023Q3
+2023Q4
+2024Q1
+2024Q2
+2024Q3
+
+33 (0.02)
+27 (0.02)
+30 (0.02)
+32 (0.02)
+49 (0.03)
+33 (0.02)
+39 (0.02)
+55 (0.03)
+53 (0.02)
+40 (0.02)
+44 (0.02)
+39 (0.02)
+41 (0.02)
+60 (0.02)
+54 (0.02)
+57 (0.02)
+76 (0.02)
+67 (0.02)
+60 (0.02)
+71 (0.02)
+72 (0.02)
+62 (0.02)
+59 (0.02)
+81 (0.02)
+59 (0.02)
+72 (0.03)
+82 (0.03)
+63 (0.02)
+801 (0.53)
+856 (0.51)
+906 (0.59)
+906 (0.54)
+849 (0.52)
+1007 (0.59)
+1031 (0.58)
+954 (0.58)
+900 (0.55)
+820 (0.51)
+780 (0.51)
+821 (0.54)
+
+598 (0.44)
+515 (0.44)
+561 (0.43)
+778 (0.45)
+773 (0.40)
+711 (0.38)
+717 (0.38)
+869 (0.43)
+1154 (0.49)
+830 (0.47)
+821 (0.45)
+900 (0.48)
+855 (0.44)
+1280 (0.47)
+1643 (0.48)
+1744 (0.51)
+1557 (0.47)
+1609 (0.47)
+1524 (0.47)
+1726 (0.49)
+1473 (0.46)
+1586 (0.44)
+1570 (0.46)
+1630 (0.47)
+1393 (0.50)
+1407 (0.53)
+1455 (0.52)
+1289 (0.49)
+322 (0.21)
+362 (0.22)
+262 (0.17)
+328 (0.20)
+287 (0.17)
+333 (0.19)
+350 (0.20)
+354 (0.22)
+365 (0.22)
+353 (0.22)
+348 (0.23)
+326 (0.22)
+
+719 (0.53)
+641 (0.54)
+718 (0.55)
+936 (0.54)
+1092 (0.57)
+1138 (0.60)
+1122 (0.60)
+1120 (0.55)
+1132 (0.48)
+879 (0.50)
+953 (0.52)
+937 (0.50)
+1042 (0.54)
+1386 (0.51)
+1691 (0.50)
+1641 (0.48)
+1654 (0.50)
+1745 (0.51)
+1681 (0.51)
+1749 (0.49)
+1639 (0.51)
+1935 (0.54)
+1810 (0.53)
+1730 (0.50)
+1334 (0.48)
+1185 (0.44)
+1271 (0.45)
+1270 (0.48)
+377 (0.25)
+453 (0.27)
+377 (0.24)
+443 (0.26)
+512 (0.31)
+374 (0.22)
+386 (0.22)
+331 (0.20)
+361 (0.22)
+425 (0.27)
+406 (0.26)
+362 (0.24)
+
+1350
+1183
+1309
+1746
+1914
+1882
+1878
+2044
+2339
+1749
+1818
+1876
+1938
+2726
+3388
+3442
+3287
+3421
+3265
+3546
+3184
+3583
+3439
+3441
+2786
+2664
+2808
+2622
+1500
+1671
+1545
+1677
+1648
+1714
+1767
+1639
+1626
+1598
+1534
+1509
+
+193 (0.03)
+214 (0.04)
+200 (0.03)
+308 (0.04)
+281 (0.03)
+318 (0.04)
+385 (0.04)
+437 (0.05)
+432 (0.04)
+401 (0.05)
+372 (0.04)
+404 (0.05)
+478 (0.05)
+599 (0.05)
+855 (0.05)
+924 (0.05)
+814 (0.05)
+845 (0.05)
+878 (0.05)
+901 (0.05)
+877 (0.06)
+897 (0.05)
+1014 (0.06)
+1417 (0.08)
+862 (0.06)
+933 (0.07)
+1078 (0.07)
+1178 (0.08)
+640 (0.07)
+852 (0.08)
+828 (0.08)
+837 (0.08)
+850 (0.08)
+762 (0.08)
+770 (0.08)
+729 (0.08)
+834 (0.08)
+787 (0.09)
+801 (0.10)
+710 (0.09)
+
+171 (0.03)
+129 (0.02)
+174 (0.03)
+235 (0.03)
+317 (0.04)
+244 (0.03)
+269 (0.03)
+300 (0.03)
+310 (0.03)
+255 (0.03)
+282 (0.03)
+299 (0.04)
+301 (0.03)
+516 (0.04)
+733 (0.04)
+636 (0.04)
+641 (0.04)
+731 (0.04)
+679 (0.04)
+699 (0.04)
+612 (0.04)
+609 (0.04)
+617 (0.04)
+772 (0.04)
+521 (0.04)
+563 (0.04)
+554 (0.04)
+653 (0.04)
+381 (0.04)
+555 (0.05)
+494 (0.05)
+442 (0.04)
+451 (0.04)
+469 (0.05)
+398 (0.04)
+359 (0.04)
+388 (0.04)
+406 (0.04)
+360 (0.04)
+334 (0.04)
+
+5906 (0.94)
+4847 (0.93)
+5526 (0.94)
+7822 (0.94)
+8196 (0.93)
+7963 (0.93)
+7960 (0.92)
+8695 (0.92)
+9363 (0.93)
+7503 (0.92)
+7642 (0.92)
+7490 (0.91)
+8659 (0.92)
+11285 (0.91)
+16909 (0.91)
+16286 (0.91)
+14740 (0.91)
+15448 (0.91)
+14651 (0.90)
+15704 (0.91)
+14311 (0.91)
+15719 (0.91)
+14650 (0.90)
+16243 (0.88)
+12734 (0.90)
+12562 (0.89)
+13083 (0.89)
+13341 (0.88)
+7756 (0.88)
+9595 (0.87)
+8810 (0.87)
+9014 (0.88)
+9537 (0.88)
+8468 (0.87)
+8540 (0.88)
+7857 (0.88)
+8631 (0.88)
+7872 (0.87)
+7051 (0.86)
+6992 (0.87)
+
+6270
+5190
+5900
+8365
+8794
+8525
+8614
+9432
+10105
+8159
+8296
+8193
+9438
+12400
+18497
+17846
+16195
+17024
+16208
+17304
+15800
+17225
+16281
+18432
+14117
+14058
+14715
+15172
+8777
+11002
+10132
+10293
+10838
+9699
+9708
+8945
+9853
+9065
+8212
+8036
+
+Total
+Mean
+Std Dev
+
+12172 (0.13)
+296.88 (0.13)
+386.15 (0.27)
+
+37861 (0.41)
+923.44 (0.41)
+513.34 (0.36)
+
+42031 (0.46)
+1025.15 (0.46)
+512.72 (0.36)
+
+92064
+2246
+1412
+
+28331 (0.06)
+6910 (0.39)
+287.83 (0.05)
+
+18170 (0.04)
+443.17 (0.03)
+1752 (0.32)
+
+423643 (0.90)
+10332.76 (0.58)
+3474.49 (0.63)
+
+470144
+17686
+5514
+
+15
+
+HODDI
+
+A.4. Experimental Setup
+A.4.1. T RAINING D ETAILS
+MLP. The drug and side effect representations are each projected from 768 to 64 dimensions through separate reduction
+layers. The resulting embeddings are concatenated and passed through a classifier with hidden layers of 128 and 32
+dimensions, followed by a final output layer with a single neuron, using ReLU activation. The model is trained using the
+Adam optimizer with a learning rate of 0.001 and Binary Cross Entropy Loss. Training runs for a maximum of 500 epochs,
+with early stopping applied if the validation loss does not improve by at least 0.001 for 20 consecutive epochs.
+GCN and GAT. The GCN and GAT models share the same architecture, with the only difference being the use of GCN
+layers in the GCN model and GAT layers in the GAT model. The architecture consists of an input layer, followed by a
+hidden layer with 128 channels, a second layer reducing the dimensionality to 64 channels, and a final classifier layer with
+2 output neurons. Both models are trained with a learning rate of 0.0005, weight decay of 0.001, and use AdamW as the
+optimizer. The loss function is Cross Entropy Loss with class weights, and early stopping is applied if the validation loss
+does not improve by 0.001 for 20 consecutive epochs. A learning rate scheduler, ReduceLROnPlateau, reduces the learning
+rate by a factor of 0.1 if the validation loss plateaus for 20 epochs. The training data is split into 29 quarters for training,
+6 quarters for validation, and 6 quarters for testing, with a loss weight balance of 1.0, ensuring equal weighting between
+drug-drug and drug-side effect losses. Training is conducted for a maximum of 500 epochs.
+HGNN-Based Method. We introduce HGNN with SMILES Embedding Features and Attention Mechanism, a novel
+architecture specifically crafted to capture high-order relationships in chemical data efficiently. By combining hypergraph convolution, multi-head attention mechanisms, and molecular embeddings derived from SMILES representations,
+our approach significantly enhances feature representation and boosts predictive accuracy. Unlike conventional graph neural networks (GNNs), this model utilizes a hypergraph incidence matrix to model intricate interactions, where a single
+hyperedge can link multiple drug entities. Node features are derived from SMILES (Simplified Molecular Input Line
+Entry System) representations and converted into numerical embeddings via a SMILES-to-vector algorithm. These features undergo linear transformation and feature fusion before being processed through hypergraph convolution layers. To
+improve the model’s expressive power, a multi-head attention mechanism is integrated into the hypergraph convolution
+process, enabling the dynamic assignment of importance to different hyperedges and facilitating more adaptable feature
+representations. The model architecture comprises an initial feature encoder, a series of hypergraph convolution layers
+(HypergraphConv), and a fully connected output layer for classification. The number of hypergraph convolution layers,
+denoted as 𝐿, is adjustable, allowing the model to capture both local and global dependencies in hypergraph-structured
+drug-side effect datasets. During forward propagation, drug node features are first encoded through a ReLU-activated
+transformation and combined with external SMILES-based embeddings. The hypergraph convolution operation is applied
+iteratively across 𝐿 layers, progressively refining node embeddings based on hypergraph connectivity. Finally, hyperedge
+features are computed by aggregating node representations, followed by a softmax layer for binary classification.
+A.4.2. H ARDWARE C ONFIGURATION
+• Computing Device: CUDA-enabled GPU (when available) or CPU
+• Memory Management:
+– SMILES processing batch size: 16
+– Maximum sequence length: 256 for SMILES strings
+• Random Seeds: Fixed seed values of 42, 3407, 54321, and 123456 were used for reproducibility
+
+16
+
+
