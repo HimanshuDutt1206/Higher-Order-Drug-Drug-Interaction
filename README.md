@@ -9,7 +9,7 @@ Two models are implemented and compared under the **same chronological split**:
 | **HGNN-SA** | Hypergraph neural network + SMILES CNN + attention pooling |
 | **PolyFormer** | Inductive set self-attention + side-effect cross-attention |
 
-A **Streamlit app** (`app.py`) runs both models on user-selected drugs and side effects side by side.
+A **Streamlit app** (`app.py`) runs **PolyFormer** (scheme **C** checkpoint) on user-selected drugs and side effects.
 
 ---
 
@@ -60,7 +60,7 @@ Test performance is on **future** quarters only (no leakage from later periods i
 - **Nodes** = drugs; **hyperedges** = prescription records.
 - Drug features: learnable ID embedding + **SMILES CNN**.
 - Two **HypergraphConv** layers, attention pooling per hyperedge, concat with learnable **SE embedding**, MLP → risk logit.
-- At demo time, inference uses a **train-only context hypergraph** plus the query edge (see `app.py`).
+- Training and evaluation use a full hypergraph; the Streamlit app runs **PolyFormer only** (see `app.py`).
 
 Details: [`explanations/explanationHGNN.md`](explanations/explanationHGNN.md).
 
@@ -105,11 +105,9 @@ Run all commands from the **project root** so `data/`, `models/`, and `results/`
 python src/HGNN_train.py
 python src/polyformer_train.py
 
-# Interactive comparison
+# Interactive demo (PolyFormer)
 streamlit run app.py
 ```
-
-**Sanity-check combos** (known pharmacology, not exact HODDI rows): [`explanations/demo_sanity_checks.md`](explanations/demo_sanity_checks.md).
 
 ---
 
@@ -117,7 +115,7 @@ streamlit run app.py
 
 ```text
 Higher-Order-Drug-Drug-Interaction/
-├── app.py                              # Streamlit: HGNN-SA vs PolyFormer
+├── app.py                              # Streamlit: PolyFormer demo
 ├── README.md
 ├── requirements.txt
 ├── hoddi paper.pdf                     # HODDI reference

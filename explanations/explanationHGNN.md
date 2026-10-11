@@ -1188,11 +1188,13 @@ ROC-AUC / PR-AUC use the *raw probabilities* across all thresholds, not just 0.5
 
 ## 12. Interactive demo inference (Streamlit)
 
+> **Note:** The current `app.py` demo runs **PolyFormer only**. The HGNN-SA context workflow below documents how HGNN *would* be run interactively if wired into Streamlit again; training/evaluation in Section 11 still use HGNN-SA on the full hypergraph.
+
 Training and **test evaluation** (Section 11) run the model on a fixed hypergraph: every test `(drug combination, side effect)` row is a hyperedge, and the model outputs one logit per row.
 
-The **Streamlit app** (`app.py`) is different. HGNN-SA is **transductive** in nature: message passing needs a surrounding hypergraph. For an ad-hoc query (“these drugs + this side effect”), the app does **not** load the full training set as hyperedges (that would be huge and slow). Instead it builds a **small train-only context hypergraph** and appends your query as the **last** hyperedge. Only that last logit is shown as the predicted risk.
+A **Streamlit-style** HGNN-SA path is **transductive** in nature: message passing needs a surrounding hypergraph. For an ad-hoc query (“these drugs + this side effect”), the app does **not** load the full training set as hyperedges (that would be huge and slow). Instead it builds a **small train-only context hypergraph** and appends your query as the **last** hyperedge. Only that last logit is shown as the predicted risk.
 
-PolyFormer in the same app does **not** use this context — it scores the selected drug set directly.
+PolyFormer scores the selected drug set directly and does **not** use this context hypergraph.
 
 ### Train-only index (`build_hgnn_train_index`)
 
