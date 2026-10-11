@@ -1,4 +1,4 @@
-# EHGNN-SA: Hypergraph Neural Network with Set Attention
+# HGNN-SA: Hypergraph Neural Network with Set Attention
 
 ### A Complete Theory, Math, and Code Walkthrough
 
@@ -55,7 +55,8 @@ An **embedding** is just a lookup table: drug #7 → row 7 of a big table of vec
 9. [Data Preparation](#9-data-preparation)
 10. [Training Loop](#10-training-loop)
 11. [Evaluation](#11-evaluation)
-12. [End-to-End Data Flow Summary](#12-end-to-end-data-flow-summary)
+12. [Interactive demo inference (Streamlit)](#12-interactive-demo-inference-streamlit)
+13. [End-to-End Data Flow Summary](#13-end-to-end-data-flow-summary)
 
 ---
 
@@ -1185,7 +1186,66 @@ ROC-AUC / PR-AUC use the *raw probabilities* across all thresholds, not just 0.5
 
 ---
 
-## 12. End-to-End Data Flow Summary
+## 12. Interactive demo inference (Streamlit)
+
+Training and **test evaluation** (Section 11) run the model on a fixed hypergraph: every test `(drug combination, side effect)` row is a hyperedge, and the model outputs one logit per row.
+
+The **Streamlit app** (`app.py`) is different. HGNN-SA is **transductive** in nature: message passing needs a surrounding hypergraph. For an ad-hoc query (“these drugs + this side effect”), the app does **not** load the full training set as hyperedges (that would be huge and slow). Instead it builds a **small train-only context hypergraph** and appends your query as the **last** hyperedge. Only that last logit is shown as the predicted risk.
+
+PolyFormer in the same app does **not** use this context — it scores the selected drug set directly.
+
+### Train-only index (`build_hgnn_train_index`)
+
+1. Load HODDI and apply the same **70% / 15% / 15%** quarter split as training.
+2. Keep rows in **train quarters only** (validation and test quarters are excluded from context).
+3. Drop rows whose side effect is not in the checkpoint’s `se2idx`.
+4. Build an inverted index: each DrugBank ID → list of train row indices where that drug appears.
+5. Split train row indices into **positives** (`target == 1`) and **negatives** (`target == 0`).
+
+The UI shows which train quarter range is used (e.g. first train quarter → last train quarter).
+
+### Context sampling (`make_hgnn_inference_tensors`)
+
+For each run, the app samples historical train rows and turns each row into one hyperedge (drugs in the prescription + that row’s side effect). Then it adds the **query** hyperedge (your selected drugs + selected side effect).
+
+Sampling has two parts, controlled by four sidebar sliders (range **0–1500**, step **50**):
+
+| Slider | Default | What it samples |
+| ------ | ------- | ---------------- |
+| **HGNN base context positives** | 400 | Random **positive** train rows from **all** of train (global background). |
+| **HGNN base context negatives** | 400 | Random **negative** train rows from **all** of train. |
+| **HGNN ego context positives** | 200 | Random **positive** train rows where **at least one drug** overlaps your selection (“ego” / drug-local neighbourhood). |
+| **HGNN ego context negatives** | 200 | Same as ego positives, but **negative** rows. |
+
+- **Base** = context unrelated to which drugs you picked (dataset-wide signal).
+- **Ego** = context focused on prescriptions that share drugs with your query (local signal around those drugs).
+
+Rows are drawn **without replacement** when enough exist; if fewer rows exist than requested, all available rows are used. Base and ego picks are concatenated and deduplicated with `np.unique`, so the **number of context hyperedges is often less than** `base_pos + base_neg + ego_pos + ego_neg`. Sampling uses `seed=42` by default so repeated clicks give the same context unless you change counts or drugs.
+
+Rows are skipped if any drug or the side effect is missing from the HGNN checkpoint vocabulary.
+
+### Forward pass and displayed score
+
+```python
+logits = hgnn_model(hyperedge_index, se_tensor, smiles_tensor)
+risk_percent = torch.sigmoid(logits[-1]).item() * 100   # last hyperedge = query only
+```
+
+Context hyperedges still affect the query score because **HypergraphConv** propagates information across shared drug nodes. Changing the sliders changes which train combinations surround your drugs, so the reported risk can shift even for the same query.
+
+### How this differs from test evaluation
+
+| | Test evaluation (`HGNN_train.py`) | Streamlit demo (`app.py`) |
+| -- | --------------------------------- | ------------------------- |
+| Hyperedges | Full test split (fixed) | Subsampled **train** context + one query edge |
+| Which logit | All test rows | **Last** row only (the query) |
+| User knobs | None | Base/ego positive and negative counts |
+
+For paper-style metrics, use the training script and saved evaluation outputs; use the app to **compare HGNN-SA vs PolyFormer** on custom drug sets with an explicit, tunable context neighbourhood.
+
+---
+
+## 13. End-to-End Data Flow Summary
 
 ```
 hoddi_merged.csv

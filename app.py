@@ -7,8 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch_geometric.nn import HypergraphConv
-from torch_scatter import scatter_add
-from torch_scatter.composite import scatter_softmax
+from torch_geometric.utils import scatter, softmax
 
 # =========================
 # Paths / filenames
@@ -65,8 +64,10 @@ class HGNN_SA(nn.Module):
         x = F.relu(self.conv2(x, hyperedge_index))
 
         drugs = x[hyperedge_index[0]]
-        attn_probs = scatter_softmax(self.attn_layer(drugs), hyperedge_index[1], dim=0)
-        combo_vector = scatter_add(drugs * attn_probs, hyperedge_index[1], dim=0)
+        attn_probs = softmax(self.attn_layer(drugs), hyperedge_index[1], dim=0)
+        combo_vector = scatter(
+            drugs * attn_probs, hyperedge_index[1], dim=0, reduce="sum"
+        )
 
         out = torch.cat([combo_vector, self.se_emb(se_indices)], dim=1)
         return self.mlp(out).squeeze(-1)

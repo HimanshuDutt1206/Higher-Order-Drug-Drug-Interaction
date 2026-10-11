@@ -10,3 +10,4 @@ torchvision
 torchaudio
 
 torch-geometric
+pyg-lib

@@ -5,8 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import HypergraphConv
-from torch_scatter import scatter_add
-from torch_scatter.composite import scatter_softmax
+from torch_geometric.utils import scatter, softmax
 from sklearn.metrics import (
     roc_auc_score, average_precision_score, f1_score,
     accuracy_score, precision_score, recall_score, confusion_matrix
@@ -60,8 +59,10 @@ class HGNN_SA(nn.Module):
         
         # 3. Multi-Head Attention
         drugs = x[hyperedge_index[0]]
-        attn_probs = scatter_softmax(self.attn_layer(drugs), hyperedge_index[1], dim=0)
-        combo_vector = scatter_add(drugs * attn_probs, hyperedge_index[1], dim=0)
+        attn_probs = softmax(self.attn_layer(drugs), hyperedge_index[1], dim=0)
+        combo_vector = scatter(
+            drugs * attn_probs, hyperedge_index[1], dim=0, reduce="sum"
+        )
         
         # 4. Predict
         out = torch.cat([combo_vector, self.se_emb(se_indices)], dim=1)

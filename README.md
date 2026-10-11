@@ -1,224 +1,233 @@
 # PolySignal: High-Order Polypharmacy Risk Prediction
 
-PolySignal is a machine learning project for predicting whether a **combination of multiple drugs** is likely to cause a **specific adverse side effect**, using the **HODDI dataset**.
+PolySignal predicts whether a **combination of multiple drugs** is likely to cause a **specific adverse side effect**, using the [**HODDI**](https://arxiv.org/pdf/2502.06274) dataset (FAERS, 2014Q3–2024Q3).
 
-We implemented and compared two models:
+Two models are implemented and compared under the **same chronological split**:
 
-- **HGNN-SA**: a hypergraph neural network with SMILES-based drug features
-- **PolyFormer**: an inductive set-attention model for drug combinations
+| Model | Idea |
+| ----- | ---- |
+| **HGNN-SA** | Hypergraph neural network + SMILES CNN + attention pooling |
+| **PolyFormer** | Inductive set self-attention + side-effect cross-attention |
+
+A **Streamlit app** (`app.py`) runs both models on user-selected drugs and side effects side by side.
 
 ---
 
-## Project Overview
+## Problem
 
-The goal of this project is to solve the following problem:
+> Given a list of drugs (DrugBank IDs) and a target side effect (UMLS CUI), predict whether that combination will cause that side effect.
 
-> Given a list of drugs and a target side effect, predict whether that drug combination will cause that side effect.
-
-This is a **high-order polypharmacy prediction task**, because the input is not just a single drug or a pair of drugs, but a group of drugs taken together.
-
-We built two different models to solve this problem and compared them under the same data split.
+This is **high-order** polypharmacy: the input is a full prescription set, not a single drug or a pair.
 
 ---
 
 ## Dataset
 
-We use the **HODDI** dataset (*Higher-Order Drug-Drug Interactions for Computational Pharmacovigilance*), derived from FAERS reports from:
+**Main file:** `data/hoddi_merged.csv`
 
-- **2014Q3 to 2024Q3**
-- **41 quarters total**
+| Column | Meaning |
+| ------ | ------- |
+| `DrugBankID` | List of DrugBank IDs in the prescription |
+| `SE_label` | UMLS CUI for the side effect |
+| `hyperedge_label` | `1` = positive, `-1` = negative |
+| `time` | Reporting quarter |
 
-### Main dataset file
-- `hoddi_merged.csv`
+Labels are mapped to binary targets: `1 → positive`, `-1 → negative`.
 
-### Important columns
-- `DrugBankID` → list of DrugBank IDs in the prescription
-- `SE_label` → UMLS CUI for the side effect
-- `hyperedge_label` → `1` for positive samples, `-1` for negative samples
-- `time` → quarter of the record
-
-We convert the labels as:
-- `1 → positive`
-- `-1 → negative`
+Supporting files: DrugBank→SMILES mappings, unique side-effect names (`Side_effects_unique.csv`), and optional SE similarity (`SE_similarity_2014Q3_2024Q3.csv`).  
+How HODDI was built: [`explanations/explanationHODDI.md`](explanations/explanationHODDI.md).
 
 ---
 
-## Data Split
+## Data split
 
-We used a **strict chronological split by quarter**, not a random split.
+**Strict chronological split by quarter** (not random):
 
-- **Train:** earliest 70% of quarters  
-  `2014Q3 → 2021Q2`
+| Split | Quarters | Range |
+| ----- | -------- | ----- |
+| Train | 70% | 2014Q3 → 2021Q2 |
+| Validation | 15% | 2021Q3 → 2022Q4 |
+| Test | 15% | 2023Q1 → 2024Q3 |
 
-- **Validation:** next 15% of quarters  
-  `2021Q3 → 2022Q4`
-
-- **Test:** latest 15% of quarters  
-  `2023Q1 → 2024Q3`
-
-This means the models are always tested on **future data**, which makes the evaluation more realistic and avoids data leakage.
+Test performance is on **future** quarters only (no leakage from later periods into training).
 
 ---
 
 ## Models
 
-### 1) HGNN-SA
+### HGNN-SA
 
-HGNN-SA treats each prescription record as a **hyperedge** in a hypergraph.
+- **Nodes** = drugs; **hyperedges** = prescription records.
+- Drug features: learnable ID embedding + **SMILES CNN**.
+- Two **HypergraphConv** layers, attention pooling per hyperedge, concat with learnable **SE embedding**, MLP → risk logit.
+- At demo time, inference uses a **train-only context hypergraph** plus the query edge (see `app.py`).
 
-#### How it works
-- **Nodes** = drugs
-- **Hyperedges** = drug combinations from each record
+Details: [`explanations/explanationHGNN.md`](explanations/explanationHGNN.md).
 
-Each drug is represented using:
-- a learnable **drug ID embedding**
-- a **SMILES CNN embedding** from its molecular structure
+### PolyFormer
 
-These features are passed through two **HypergraphConv** layers so that drugs can exchange information through the combinations they appear in.
+- Drug set (padded, max 16 drugs): same ID + SMILES features.
+- **Transformer encoder** over the set; **cross-attention** from a learnable SE embedding; MLP → logit.
+- **Inductive**: predicts from an arbitrary drug set without building a full inference hypergraph.
 
-Then:
-- attention pooling is used to combine the drug features inside each hyperedge
-- this pooled combination vector is concatenated with a learnable side-effect embedding
-- an MLP outputs the final probability
-
-#### Why this model is useful
-It explicitly models higher-order relations between drugs using hypergraph message passing.
+Details: [`explanations/explanationPolyformer.md`](explanations/explanationPolyformer.md).
 
 ---
 
-### 2) PolyFormer
+## Setup
 
-PolyFormer treats the prescription as a **set of drugs**, rather than a hypergraph.
+From the project root:
 
-#### How it works
-Each drug is represented using:
-- a learnable **drug ID embedding**
-- a **SMILES CNN embedding**
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-Then:
-- the set of drugs is passed through **self-attention**
-- the side effect embedding interacts with the drug set using **cross-attention**
-- the resulting representation is passed through an MLP to produce the risk probability
+PyTorch Geometric may need an install step matched to your CUDA/CPU build; see [PyG installation](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
 
-#### Why this model is useful
-PolyFormer is **inductive**, meaning it can make predictions directly from an arbitrary user-entered drug set without needing an inference-time hypergraph.
+Train checkpoints are **not** always committed (large `.pt` files). After training, expect:
+
+- `models/HGNN_model.pt`
+- `models/polyformer_model.pt`
+
+The repo may include PolyFormer weights for synthetic-negative runs: `models/polyformer_synth_{B,C,D}.pt`.
 
 ---
 
-## Repository Structure
+## Usage
+
+Run all commands from the **project root** so `data/`, `models/`, and `results/` resolve correctly.
+
+```bash
+# Train scheme A (official HODDI in hoddi_merged.csv)
+python src/HGNN_train.py
+python src/polyformer_train.py
+
+# Interactive comparison
+streamlit run app.py
+```
+
+**Sanity-check combos** (known pharmacology, not exact HODDI rows): [`explanations/demo_sanity_checks.md`](explanations/demo_sanity_checks.md).
+
+---
+
+## Repository structure
 
 ```text
 Higher-Order-Drug-Drug-Interaction/
-│
-├── app.py                          # Streamlit app (run from project root)
+├── app.py                              # Streamlit: HGNN-SA vs PolyFormer
 ├── README.md
 ├── requirements.txt
+├── hoddi paper.pdf                     # HODDI reference
 │
-├── data/                           # Raw and reference datasets
-│   ├── hoddi_merged.csv                # Main HODDI dataset (labels + drug combos)
-│   ├── Drugbank_ID_SMILE_all_structure links.csv  # DrugBank ID → SMILES mapping
-│   ├── DrugBankID2SMILES.csv           # Alternative DrugBank ID → SMILES reference
-│   ├── SE_similarity_2014Q3_2024Q3.csv # Side-effect similarity matrix over time
-│   └── Side_effects_unique.csv         # Unique side effects with UMLS CUI and names
+├── data/
+│   ├── hoddi_merged.csv                # Scheme A (official negatives)
+│   ├── hoddi_synth_B.csv               # Synthetic negatives (schemes B–D)
+│   ├── hoddi_synth_C.csv
+│   ├── hoddi_synth_D.csv
+│   ├── Drugbank_ID_SMILE_all_structure links.csv
+│   ├── DrugBankID2SMILES.csv
+│   ├── Side_effects_unique.csv
+│   └── SE_similarity_2014Q3_2024Q3.csv
 │
-├── src/                            # Training scripts
-│   ├── HGNN_train.py               # Train and evaluate the HGNN-SA model
-│   └── polyformer_train.py         # Train and evaluate the PolyFormer model
+├── src/
+│   ├── HGNN_train.py
+│   ├── polyformer_train.py             # CLI: --data, --out_model, --out_report, --tag
+│   ├── generate_synthetic_negatives.py # Build B/C/D from positives
+│   └── build_synth_comparison.py       # Aggregate A/B/C/D metrics
 │
-├── models/                         # Saved model checkpoints
-│   ├── HGNN_model.pt               # Best HGNN-SA weights + vocab mappings
-│   └── polyformer_model.pt         # Best PolyFormer weights + vocab mappings
+├── models/                             # Checkpoints (train or use committed synth_*)
+├── results/                            # Evaluation reports and comparison tables
 │
-└── results/                        # Evaluation reports
-    ├── evaluate_HGNN.txt           # HGNN-SA test set metrics
-    └── Evaluate_PolyFormer.txt     # PolyFormer test set metrics
+└── explanations/
+    ├── explanationHODDI.md
+    ├── explanationHGNN.md
+    ├── explanationPolyformer.md
+    ├── explanationNegativeSampling.md
+    └── Polypharmacy Technical Review.pdf
 ```
 
-> **Note:** All scripts expect to be run from the **project root** directory so that relative paths (`data/`, `models/`, `results/`) resolve correctly.
->
-> ```bash
-> # Train
-> python src/HGNN_train.py
-> python src/polyformer_train.py
->
-> # Launch app
-> streamlit run app.py
-> ```
+---
+
+## Results (scheme A — official HODDI negatives)
+
+Same future test set for both models. Metrics from committed report files.
+
+### HGNN-SA — `results/evaluate_HGNN.txt`
+
+| Metric | Value |
+| ------ | ----- |
+| ROC-AUC | 0.8903 |
+| PR-AUC | 0.8990 |
+| F1 | 0.8054 |
+| Accuracy | 0.8189 |
+| Precision | 0.8698 |
+| Recall | 0.7499 |
+
+### PolyFormer — `results/Evaluate_PolyFormer.txt`
+
+| Metric | Value |
+| ------ | ----- |
+| ROC-AUC | 0.9678 |
+| PR-AUC | 0.9672 |
+| F1 | 0.8940 |
+| Accuracy | 0.8988 |
+| Precision | 0.9384 |
+| Recall | 0.8536 |
+
+On scheme A, PolyFormer leads on every reported metric. HGNN-SA remains a strong hypergraph baseline; the gap is largest on ranking metrics (ROC-AUC / PR-AUC).
 
 ---
 
-## Results
+## Synthetic negative robustness
 
-Both models were evaluated on the same unseen future test set.
-
-### HGNN-SA Performance
-From `evaluate_HGNN.txt`:
-- **ROC-AUC:** 0.8691
-- **PR-AUC:** 0.8791
-- **F1-score:** 0.7767
-- **Accuracy:** 0.7954
-- **Precision:** 0.8549
-- **Recall:** 0.7116
-
-### PolyFormer Performance
-From `Evaluate_PolyFormer.txt`:
-- **ROC-AUC:** 0.9651
-- **PR-AUC:** 0.9658
-- **F1-score:** 0.8897
-- **Accuracy:** 0.8959
-- **Precision:** 0.9457
-- **Recall:** 0.8400
-
----
-
-## Synthetic Negative Robustness (Review extension)
-
-Official HODDI negatives (**scheme A**: replace 1 drug **and** 1 SE) ship in `data/hoddi_merged.csv` and are the primary baseline above.
-
-We also regenerate alternate negatives from **positives only** and retrain PolyFormer (without overwriting the A checkpoint):
+Official HODDI negatives (**scheme A**: replace one drug **and** one SE) live in `hoddi_merged.csv`. Schemes **B/C/D** are regenerated from **positives only**; PolyFormer is retrained per scheme without overwriting the scheme A checkpoint.
 
 | Scheme | Idea | Data file |
 | ------ | ---- | --------- |
-| B | Replace 1 drug; keep SE | `data/hoddi_synth_B.csv` |
+| A | HODDI official (drug + SE corrupt) | `data/hoddi_merged.csv` |
+| B | Replace one drug; keep SE | `data/hoddi_synth_B.csv` |
 | C | Keep combo; replace SE | `data/hoddi_synth_C.csv` |
-| D | Like B + reject if combo still contains a known positive subset for that SE | `data/hoddi_synth_D.csv` |
+| D | Like B; reject if combo still contains a known positive subset for that SE | `data/hoddi_synth_D.csv` |
 
 ```bash
-# Generate B/C/D tables + generation stats
 python src/generate_synthetic_negatives.py
 
-# Train PolyFormer on each scheme (separate outputs)
 python src/polyformer_train.py --data data/hoddi_synth_B.csv --out_model models/polyformer_synth_B.pt --out_report results/Evaluate_PolyFormer_synth_B.txt --tag synth_B_drug_corrupt
 python src/polyformer_train.py --data data/hoddi_synth_C.csv --out_model models/polyformer_synth_C.pt --out_report results/Evaluate_PolyFormer_synth_C.txt --tag synth_C_se_corrupt
 python src/polyformer_train.py --data data/hoddi_synth_D.csv --out_model models/polyformer_synth_D.pt --out_report results/Evaluate_PolyFormer_synth_D.txt --tag synth_D_drug_corrupt_subset_aware
 
-# Build comparison table (uses existing A report + B/C/D reports)
 python src/build_synth_comparison.py
 ```
 
-Walkthrough of all schemes (including the paper method): [`explanations/explanationNegativeSampling.md`](explanations/explanationNegativeSampling.md)  
-Results table: [`results/synthetic_negative_comparison.md`](results/synthetic_negative_comparison.md)
+- Schemes walkthrough: [`explanations/explanationNegativeSampling.md`](explanations/explanationNegativeSampling.md)
+- Results and interpretation: [`results/synthetic_negative_comparison.md`](results/synthetic_negative_comparison.md)
+- Generation stats: `results/synthetic_negative_generation_stats.csv`
+- Written review: [`explanations/Polypharmacy Technical Review.pdf`](explanations/Polypharmacy%20Technical%20Review.pdf)
 
-**Limitation:** synthetic negatives are closed-world proxies, not proven-safe combinations. Harder schemes may lower AUC; that is expected when label difficulty increases.
-
-PolyFormer test ROC-AUC under each scheme (from `results/synthetic_negative_comparison.md`):
+**PolyFormer test ROC-AUC by scheme:**
 
 | A (official) | B (drug-corrupt) | C (SE-corrupt) | D (subset-aware) |
 | ------------ | ---------------- | -------------- | ---------------- |
 | 0.9678 | 0.7802 | 0.8905 | 0.7923 |
 
+**Limitation:** synthetic negatives are closed-world training proxies, not proven-safe combinations. Lower AUC on harder schemes (B/D) is expected and shows that very high scores on scheme A partly reflect **easier** negative construction—not a solved clinical deployment problem.
+
 ---
 
 ## Summary
 
-PolyFormer significantly outperformed HGNN-SA on the same chronological future test set across all evaluation metrics.  
-This suggests that an **inductive set-attention architecture** is highly effective for modeling **high-order drug interactions**, and can generalize better to unseen future prescriptions compared to hypergraph-based approaches.
+- **PolyFormer** (inductive set-attention) beats **HGNN-SA** (hypergraph) on the shared chronological test split for official HODDI labels.
+- **Negative-sampling stress tests** show a large drop when only drugs are perturbed (B/D), which is the harder and more realistic membership question; scheme A metrics should be read with that context.
+- **Docs + demo** tie the codebase to dataset construction, model design, and review-ready analysis.
 
 ---
 
 ## Citation
 
-If you use or reference the HODDI dataset, please cite:
+If you use or reference HODDI, please cite:
 
-**Wang Z, Shi Y, Liu X, Chen C, Wen J, Wang R. 
-HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational Pharmacovigilance.https://arxiv.org/pdf/2502.06274**  
+**Wang Z, Shi Y, Liu X, Chen C, Wen J, Wang R.** HODDI: A Dataset of High-Order Drug-Drug Interactions for Computational Pharmacovigilance.  
+https://arxiv.org/pdf/2502.06274
