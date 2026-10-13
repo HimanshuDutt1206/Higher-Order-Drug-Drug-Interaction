@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# Ensure root directory is on python path
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -5,88 +13,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# =========================
-# Paths / filenames
-# =========================
-DRUGBANK_CSV = "data/Drugbank_ID_SMILE_all_structure links.csv"
-SIDE_EFFECTS_UNIQUE_CSV = "data/Side_effects_unique.csv"
-MAX_SMILES_LEN = 256
+from src.config import (
+    DRUGBANK_CSV,
+    SIDE_EFFECTS_CSV,
+    POLYFORMER_SYNTH_C_CKPT,
+    DEFAULT_MAX_SMILES_LEN,
+)
+from src.data.smiles import build_smiles_tensor
+from src.models.polyformer import PolyFormerLearnableSE
 
 # Scheme C: SE-corrupt synthetic negatives (`hoddi_synth_C.csv`) — demo checkpoint
-POLYFORMER_CKPT = "models/polyformer_synth_C.pt"
-
-
-# =========================
-# PolyFormer architecture (learnable SE, must match your training)
-# =========================
-class SmilesEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim=64, out_dim=64):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        self.conv1 = nn.Conv1d(embed_dim, 128, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(128, out_dim, kernel_size=3, padding=1)
-
-    def forward(self, smiles_tokens):
-        x = self.embed(smiles_tokens).transpose(1, 2)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        return F.max_pool1d(x, kernel_size=x.size(2)).squeeze(-1)
-
-
-class PolyFormerLearnableSE(nn.Module):
-    def __init__(self, num_drugs, smiles_vocab_size, num_ses, d_model=128, nhead=8, num_layers=2):
-        super().__init__()
-        self.drug_id_emb = nn.Embedding(num_drugs, 64)
-        self.smiles_enc = SmilesEncoder(smiles_vocab_size, embed_dim=64, out_dim=64)
-        self.drug_proj = nn.Linear(128, d_model)
-
-        self.se_emb = nn.Embedding(num_ses, d_model)
-
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=4 * d_model,
-            dropout=0.1,
-            batch_first=True,
-            activation="relu",
-            norm_first=False,
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
-
-        self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, dropout=0.1, batch_first=True)
-
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * d_model, d_model),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(d_model, 1),
-        )
-
-    def forward(self, drugs_pad, mask, se_idx, smiles_tok_all):
-        B, K = drugs_pad.shape
-        drugs_safe = drugs_pad.clamp(min=0)
-
-        did = self.drug_id_emb(drugs_safe)
-
-        flat = drugs_safe.reshape(-1)
-        uniq, inv = torch.unique(flat, return_inverse=True)
-        smiles_tokens = smiles_tok_all[uniq]
-        smiles_uniq = self.smiles_enc(smiles_tokens)
-        smiles_feat = smiles_uniq[inv].reshape(B, K, -1)
-
-        drug_feat = torch.cat([did, smiles_feat], dim=-1)
-        drug_feat = self.drug_proj(drug_feat)
-
-        key_padding = (mask == 0)
-        drug_ctx = self.encoder(drug_feat, src_key_padding_mask=key_padding)
-
-        q = self.se_emb(se_idx).unsqueeze(1)
-        attn_out, _ = self.cross_attn(query=q, key=drug_ctx, value=drug_ctx, key_padding_mask=key_padding)
-
-        combo = attn_out.squeeze(1)
-        se_token = q.squeeze(1)
-        logits = self.mlp(torch.cat([combo, se_token], dim=-1)).squeeze(-1)
-        return logits
+POLYFORMER_CKPT = str(POLYFORMER_SYNTH_C_CKPT)
+SIDE_EFFECTS_UNIQUE_CSV = str(SIDE_EFFECTS_CSV)
+DRUGBANK_PATH = str(DRUGBANK_CSV)
+MAX_SMILES_LEN = DEFAULT_MAX_SMILES_LEN
 
 
 # =========================
@@ -94,7 +34,7 @@ class PolyFormerLearnableSE(nn.Module):
 # =========================
 @st.cache_data
 def load_name_maps():
-    drugs_df = pd.read_csv(DRUGBANK_CSV, usecols=["DrugBank ID", "Name"])
+    drugs_df = pd.read_csv(DRUGBANK_PATH, usecols=["DrugBank ID", "Name"])
     drug_map = dict(zip(drugs_df["DrugBank ID"], drugs_df["Name"]))
 
     se_df = pd.read_csv(SIDE_EFFECTS_UNIQUE_CSV, usecols=["umls_cui_from_meddra", "side_effect_name"])
@@ -104,27 +44,11 @@ def load_name_maps():
 
 @st.cache_resource
 def _build_smiles_tensor(drug2idx, device):
-    db = pd.read_csv(DRUGBANK_CSV, usecols=["DrugBank ID", "SMILES"])
-    drug2smiles = dict(zip(db["DrugBank ID"], db["SMILES"]))
+    tensor, _, vocab_size = build_smiles_tensor(
+        drug2idx, max_len=MAX_SMILES_LEN, device=device
+    )
+    return tensor, vocab_size
 
-    chars = set()
-    for s in drug2smiles.values():
-        if isinstance(s, str) and len(s) > 0:
-            chars.update(list(s))
-    char2idx = {c: i + 1 for i, c in enumerate(sorted(chars))}
-    char2idx["<UNK>"] = len(char2idx) + 1
-    unk = char2idx["<UNK>"]
-    rebuilt_vocab_size = len(char2idx) + 1
-
-    smiles_tok = np.zeros((len(drug2idx), MAX_SMILES_LEN), dtype=np.int64)
-    for drug, di in drug2idx.items():
-        s = drug2smiles.get(drug, None)
-        if not isinstance(s, str) or len(s) == 0:
-            s = "C"
-        toks = [char2idx.get(ch, unk) for ch in s[:MAX_SMILES_LEN]]
-        smiles_tok[di, :len(toks)] = toks
-    smiles_tok = torch.from_numpy(smiles_tok).to(device)
-    return smiles_tok, rebuilt_vocab_size
 
 
 @st.cache_resource

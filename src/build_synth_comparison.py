@@ -7,10 +7,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import sys
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "results"
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.config import RESULTS_DIR as RESULTS
 
 REPORTS = {
     "A": {

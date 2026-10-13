@@ -12,41 +12,28 @@ Does not modify data/hoddi_merged.csv (official scheme A).
 
 from __future__ import annotations
 
-import ast
-import random
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import random
 import pandas as pd
+from src.config import HODDI_CSV, DATA_DIR, RESULTS_DIR, DEFAULT_SEED
+from src.data.dataset import parse_drug_ids as parse_drugs
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC_CSV = ROOT / "data" / "hoddi_merged.csv"
-OUT_DIR = ROOT / "data"
-RESULTS_DIR = ROOT / "results"
+SRC_CSV = HODDI_CSV
+OUT_DIR = DATA_DIR
 
-SEED = 42
+SEED = DEFAULT_SEED
 MAX_ATTEMPTS = 50
 
 Key = Tuple[FrozenSet[str], str]
 
-
-def parse_drugs(x) -> List[str]:
-    if isinstance(x, list):
-        drugs = x
-    elif isinstance(x, str):
-        drugs = ast.literal_eval(x)
-    else:
-        raise TypeError(f"Unexpected DrugBankID type: {type(x)}")
-    # unique, preserve first-seen order then we sort for canonical forms
-    seen = set()
-    out = []
-    for d in drugs:
-        d = str(d)
-        if d not in seen:
-            seen.add(d)
-            out.append(d)
-    return out
 
 
 def combo_key(drugs: List[str]) -> FrozenSet[str]:
