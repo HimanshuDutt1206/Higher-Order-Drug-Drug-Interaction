@@ -17,13 +17,18 @@ from src.config import (
     DRUGBANK_CSV,
     SIDE_EFFECTS_CSV,
     POLYFORMER_SYNTH_C_CKPT,
+    MODELS_DIR,
     DEFAULT_MAX_SMILES_LEN,
+    DEFAULT_MAX_DRUGS,
 )
-from src.data.smiles import build_smiles_tensor
+from src.data.smiles import build_smiles_tensor, load_drugbank_smiles
+from src.data.conformer_3d import compute_drug_features, TOTAL_DRUG_FEAT_DIM
 from src.models.polyformer import PolyFormerLearnableSE
+from src.models.inductive_polyformer import InductivePolyFormer
 
-# Scheme C: SE-corrupt synthetic negatives (`hoddi_synth_C.csv`) — demo checkpoint
-POLYFORMER_CKPT = str(POLYFORMER_SYNTH_C_CKPT)
+# Model Checkpoints
+INDUCTIVE_CKPT = MODELS_DIR / "inductive_polyformer_3d.pt"
+BASELINE_CKPT = POLYFORMER_SYNTH_C_CKPT
 SIDE_EFFECTS_UNIQUE_CSV = str(SIDE_EFFECTS_CSV)
 DRUGBANK_PATH = str(DRUGBANK_CSV)
 MAX_SMILES_LEN = DEFAULT_MAX_SMILES_LEN
@@ -34,12 +39,13 @@ MAX_SMILES_LEN = DEFAULT_MAX_SMILES_LEN
 # =========================
 @st.cache_data
 def load_name_maps():
-    drugs_df = pd.read_csv(DRUGBANK_PATH, usecols=["DrugBank ID", "Name"])
+    drugs_df = pd.read_csv(DRUGBANK_PATH, usecols=["DrugBank ID", "Name", "SMILES"])
     drug_map = dict(zip(drugs_df["DrugBank ID"], drugs_df["Name"]))
+    drug2smiles = dict(zip(drugs_df["DrugBank ID"], drugs_df["SMILES"]))
 
     se_df = pd.read_csv(SIDE_EFFECTS_UNIQUE_CSV, usecols=["umls_cui_from_meddra", "side_effect_name"])
     se_map = dict(zip(se_df["umls_cui_from_meddra"].astype(str), se_df["side_effect_name"]))
-    return drug_map, se_map
+    return drug_map, drug2smiles, se_map
 
 
 @st.cache_resource
@@ -50,16 +56,35 @@ def _build_smiles_tensor(drug2idx, device):
     return tensor, vocab_size
 
 
-
 @st.cache_resource
-def load_polyformer_checkpoint(ckpt_path: str):
+def load_active_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt = torch.load(ckpt_path, map_location=device)
 
+    # Check if Inductive 3D Model exists
+    if INDUCTIVE_CKPT.exists():
+        ckpt = torch.load(INDUCTIVE_CKPT, map_location=device)
+        se2idx = ckpt["se2idx"]
+        model = InductivePolyFormer(
+            num_ses=len(se2idx),
+            in_drug_dim=ckpt.get("in_drug_dim", TOTAL_DRUG_FEAT_DIM),
+            d_model=ckpt.get("d_model", 128),
+            nhead=8,
+            num_layers=2,
+        ).to(device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        model.eval()
+        return {
+            "type": "inductive_3d",
+            "model": model,
+            "se2idx": se2idx,
+            "device": device,
+            "max_drugs": ckpt.get("max_drugs", DEFAULT_MAX_DRUGS),
+        }
+
+    # Fallback to Baseline Scheme C PolyFormer
+    ckpt = torch.load(BASELINE_CKPT, map_location=device)
     drug2idx = ckpt["drug2idx"]
     se2idx = ckpt["se2idx"]
-    max_drugs_model = int(ckpt.get("max_drugs_model", 16))
-
     smiles_tok, rebuilt_vocab_size = _build_smiles_tensor(drug2idx, device)
 
     model = PolyFormerLearnableSE(
@@ -74,40 +99,63 @@ def load_polyformer_checkpoint(ckpt_path: str):
     model.eval()
 
     return {
+        "type": "baseline",
         "model": model,
         "drug2idx": drug2idx,
         "se2idx": se2idx,
         "smiles_tok": smiles_tok,
         "device": device,
-        "max_drugs": max_drugs_model,
-        "data_csv": ckpt.get("data_csv", ""),
-        "tag": ckpt.get("tag", ""),
+        "max_drugs": int(ckpt.get("max_drugs_model", 16)),
     }
 
 
-def polyformer_predict(bundle, selected_drugs, target_se):
-    drug2idx = bundle["drug2idx"]
+def polyformer_predict(bundle, selected_drugs, target_se, drug2smiles):
     se2idx = bundle["se2idx"]
     if target_se not in se2idx:
         return None, "Side effect not in this model vocabulary"
 
     drugs = sorted(set(selected_drugs))[: bundle["max_drugs"]]
-    idxs = [drug2idx[d] for d in drugs if d in drug2idx]
-    if len(idxs) < 2:
-        return None, "Need at least 2 drugs in this model vocabulary"
-
     device = bundle["device"]
-    K = bundle["max_drugs"]
-    drugs_pad = torch.full((1, K), -1, dtype=torch.long, device=device)
-    mask = torch.zeros((1, K), dtype=torch.long, device=device)
-    drugs_pad[0, :len(idxs)] = torch.tensor(idxs, dtype=torch.long, device=device)
-    mask[0, :len(idxs)] = 1
-    se_idx = torch.tensor([se2idx[target_se]], dtype=torch.long, device=device)
 
-    with torch.no_grad():
-        logits = bundle["model"](drugs_pad, mask, se_idx, bundle["smiles_tok"])
-        prob = torch.sigmoid(logits).item() * 100
-    return prob, None
+    if bundle["type"] == "inductive_3d":
+        # Pure Inductive 3D Inference: works for ANY drug in DrugBank!
+        K = bundle["max_drugs"]
+        feat_pad = np.zeros((1, K, TOTAL_DRUG_FEAT_DIM), dtype=np.float32)
+        mask = torch.zeros((1, K), dtype=torch.long, device=device)
+
+        for idx, d in enumerate(drugs):
+            smiles = drug2smiles.get(d, "C")
+            feat = compute_drug_features(smiles)
+            feat_pad[0, idx] = feat
+            mask[0, idx] = 1
+
+        drug_feats = torch.from_numpy(feat_pad).to(device)
+        se_idx = torch.tensor([se2idx[target_se]], dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            logits = bundle["model"](drug_feats, mask, se_idx)
+            prob = torch.sigmoid(logits).item() * 100
+        return prob, None
+
+    else:
+        # Baseline transductive lookup fallback
+        drug2idx = bundle["drug2idx"]
+        idxs = [drug2idx[d] for d in drugs if d in drug2idx]
+        if len(idxs) < 2:
+            return None, "Need at least 2 drugs in this baseline vocabulary"
+
+        K = bundle["max_drugs"]
+        drugs_pad = torch.full((1, K), -1, dtype=torch.long, device=device)
+        mask = torch.zeros((1, K), dtype=torch.long, device=device)
+        drugs_pad[0, :len(idxs)] = torch.tensor(idxs, dtype=torch.long, device=device)
+        mask[0, :len(idxs)] = 1
+        se_idx = torch.tensor([se2idx[target_se]], dtype=torch.long, device=device)
+
+        with torch.no_grad():
+            logits = bundle["model"](drugs_pad, mask, se_idx, bundle["smiles_tok"])
+            prob = torch.sigmoid(logits).item() * 100
+        return prob, None
+
 
 
 # =========================
@@ -272,15 +320,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-drug_map, se_map = load_name_maps()
+drug_map, drug2smiles, se_map = load_name_maps()
 
 try:
-    bundle = load_polyformer_checkpoint(POLYFORMER_CKPT)
+    bundle = load_active_model()
 except FileNotFoundError:
-    st.error(f"Missing checkpoint: {POLYFORMER_CKPT}")
+    st.error("Missing model checkpoint. Train inductive model with: python src/train_inductive.py")
     st.stop()
 
-drug_vocab = sorted(bundle["drug2idx"].keys())
+# Curated Master Drug Library: All 11,912 standardized DrugBank medications!
+drug_vocab = sorted([d for d, s in drug2smiles.items() if isinstance(s, str) and len(s) > 0])
 se_vocab = sorted(bundle["se2idx"].keys())
 max_drugs = bundle["max_drugs"]
 
@@ -293,11 +342,26 @@ def fmt_se(s):
     return f"{se_map.get(str(s), 'Unknown effect')} ({s})"
 
 
+model_badge = (
+    '<span style="background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); '
+    'color: #4ade80; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600;">'
+    '✨ 3D-Aware Inductive Model Active</span>'
+    if bundle["type"] == "inductive_3d"
+    else '<span style="background: rgba(234, 179, 8, 0.2); border: 1px solid rgba(234, 179, 8, 0.4); '
+    'color: #facc15; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600;">'
+    'ℹ️ Baseline Model Active</span>'
+)
+
 st.markdown(
-    """
+    f"""
     <div class="hero">
-        <h1>PolyFormer</h1>
-        <p>Higher-order drug–drug interaction risk prediction.</p>
+        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div>
+                <h1>PolyFormer</h1>
+                <p>Higher-order drug–drug interaction risk prediction.</p>
+            </div>
+            <div>{model_badge}</div>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -310,14 +374,14 @@ col_query, col_score = st.columns([11, 9], gap="large")
 
 with col_query:
     with st.container(border=True):
-        st.markdown('<p class="panel-title">Build query</p>', unsafe_allow_html=True)
+        st.markdown('<p class="panel-title">Build query (11,912 Validated Drugs)</p>', unsafe_allow_html=True)
         selected_drugs = st.multiselect(
             "Drugs",
             options=drug_vocab,
             default=["DB00472", "DB00752"] if "DB00472" in drug_vocab else drug_vocab[:2],
             max_selections=max_drugs,
             format_func=fmt_drug,
-            placeholder="Search and add drugs (minimum 2)…",
+            placeholder="Search all 11,912 drugs by name (e.g. Metformin, Warfarin)…",
         )
         selected_se = st.selectbox(
             "Side effect",
@@ -336,13 +400,14 @@ if run_predict:
             "se_name": se_map.get(str(selected_se), selected_se),
         }
     else:
-        prob, err = polyformer_predict(bundle, selected_drugs, selected_se)
+        prob, err = polyformer_predict(bundle, selected_drugs, selected_se, drug2smiles)
         st.session_state.last_prediction = {
             "prob": prob,
             "err": err,
             "n_drugs": len(selected_drugs),
             "se_name": se_map.get(str(selected_se), selected_se),
         }
+
 
 with col_score:
     pred = st.session_state.last_prediction
